@@ -1,0 +1,10 @@
+[package]
+name = "licorne"
+version = "0.1.0"
+edition = "2021"
+description = "Low-level PyO3 structural adapters and bindings for the LI-ESKG core runtime."
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]

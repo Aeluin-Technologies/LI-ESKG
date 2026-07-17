@@ -1,0 +1,12 @@
+[workspace]
+members = [
+    "crates/li-core",
+    "crates/li-factors",
+    "crates/li-inference",
+    "crates/li-model",
+    "crates/li-runtime",
+    "crates/li-storage",
+    "crates/li-workspace",
+    "python"
+]
+resolver = "2"
