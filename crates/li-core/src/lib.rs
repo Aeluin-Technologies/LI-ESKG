@@ -1,14 +1,26 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+//! # LI-ESKG domain primitives
+//!
+//! This crate contains the pure mathematical definitions, algebraic data
+//! types, and core primitives of the Latent Identity Event-State Knowledge
+//! Graph (LI-ESKG) framework.
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+#![no_std]
+#![deny(unsafe_code, missing_docs)]
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+extern crate alloc;
+
+pub mod belief;
+pub mod events;
+pub mod ids;
+pub mod observation;
+pub mod ontology;
+pub mod probability;
+pub mod relation;
+
+pub use belief::*;
+pub use events::*;
+pub use ids::*;
+pub use observation::*;
+pub use ontology::*;
+pub use probability::*;
+pub use relation::*;
