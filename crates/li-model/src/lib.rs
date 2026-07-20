@@ -1,14 +1,25 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+//! # LI-ESKG knowledge model
+//!
+//! It defines the core graph ontology, relational edge schemas, transactional
+//! graph operations, and algebraic invariants matching the paper's theorems.
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+#![no_std]
+#![deny(unsafe_code)]
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+extern crate alloc;
+
+pub mod graph;
+pub mod invariants;
+pub mod memory;
+pub mod ontology;
+pub mod operations;
+pub mod projection;
+pub mod queries;
+
+pub use graph::*;
+pub use invariants::*;
+pub use memory::*;
+pub use ontology::*;
+pub use operations::*;
+pub use projection::*;
+pub use queries::*;
