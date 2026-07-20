@@ -10,7 +10,7 @@ use crate::probability::Confidence;
 pub struct Timestamp(pub i64);
 
 /// Unique modality identifier for incoming observation channels.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Modality(pub u32);
 
 /// Immutable empirical observation representing a physical world measurement.
