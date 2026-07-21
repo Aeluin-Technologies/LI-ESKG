@@ -3,6 +3,15 @@ name = "li-model"
 version = "0.1.0"
 edition = "2024"
 
+[[bench]]
+name = "invariant_benches"
+harness = false
+
 [dependencies]
 li-core = { path = "../li-core", version = "0.1.0" }
 rayon = "1"
+
+[dev-dependencies]
+criterion = { version = "0.8", features = ["html_reports"] }
+rand = "0.10"
+rand_chacha = "0.10"
