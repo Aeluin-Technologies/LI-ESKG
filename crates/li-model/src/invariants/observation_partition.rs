@@ -1,10 +1,11 @@
 //! Verification of Theorem 4 (Observation Partition).
 
-use alloc::collections::BTreeSet;
+use alloc::vec::Vec;
 use core::ops::Deref;
 
 use li_core::ids::VertexId;
 use li_core::relation::Relation;
+use rayon::prelude::*;
 
 use crate::graph::KnowledgeGraph;
 use crate::invariants::Invariant;
@@ -17,60 +18,65 @@ pub struct ObservationPartitionInvariant;
 
 impl<G> Invariant<G> for ObservationPartitionInvariant
 where
-    G: KnowledgeGraph + NeighborhoodQuery + IdentitySetQuery + SupportSetQuery,
+    G: KnowledgeGraph
+        + NeighborhoodQuery
+        + IdentitySetQuery
+        + SupportSetQuery
+        + Sync,
     for<'a> <G as NeighborhoodQuery>::EdgeRef<'a>: Deref<Target = Edge>,
 {
     /// Evaluates partition properties by inspecting active identity support
-    /// sets and tracking cross-boundary uniqueness constraints.
+    /// sets in parallel and tracking cross-boundary uniqueness constraints.
     fn verify(&self, graph: &G) -> bool {
         let active_identities = graph.all_identities();
-        let mut discovered_observations = BTreeSet::new();
+        let local_results: Option<Vec<Vec<_>>> = active_identities
+            .into_par_iter()
+            .map(|id| {
+                let support = graph.query_support_set(id);
 
-        for id in active_identities {
-            let support = graph.query_support_set(id);
-
-            // Every active identity node must have a non-empty support set.
-            if support.is_empty() {
-                return false;
-            }
-
-            for obs in support {
-                // The support sets must be disjoint. If this observation ID
-                // was already captured by another identity, it's a violation.
-                if !discovered_observations.insert(obs.id) {
-                    return false;
+                if support.is_empty() {
+                    return None;
                 }
 
-                // Cross-verify the structural edge topology from the
-                // observation's outbound view.
-                let vid = VertexId(obs.id.0);
-                let out_edges = graph.out_edges(vid);
-                let mut supports_relation_count = 0;
+                let mut local_obs_ids = Vec::with_capacity(support.len());
 
-                for edge_ref in out_edges {
-                    let edge = edge_ref.deref();
+                for obs in support {
+                    let vid = VertexId(obs.id.0);
+                    let out_edges = graph.out_edges(vid);
+                    let mut supports_relation_count = 0;
 
-                    if edge.relation == Relation::Supports {
-                        supports_relation_count += 1;
-
-                        // Structural Violation: The observation claims to
-                        // support an identity, but its outbound pointer
-                        // targets a completely different vertex index.
-                        if edge.target != VertexId(id.0) {
-                            return false;
+                    for edge_ref in out_edges {
+                        let edge = edge_ref.deref();
+                        if edge.relation == Relation::Supports {
+                            supports_relation_count += 1;
+                            if edge.target != VertexId(id.0) {
+                                return None;
+                            }
                         }
                     }
+
+                    if supports_relation_count != 1 {
+                        return None;
+                    }
+
+                    local_obs_ids.push(obs.id);
                 }
 
-                // The observation must have exactly one valid outbound support
-                // relation matching the active linkage layer.
-                if supports_relation_count != 1 {
-                    return false;
-                }
-            }
-        }
+                Some(local_obs_ids)
+            })
+            .collect();
 
-        true
+        let obs_lists = match local_results {
+            Some(lists) => lists,
+            None => return false,
+        };
+
+        let mut all_obs_ids: Vec<_> =
+            obs_lists.into_iter().flatten().collect();
+        all_obs_ids.par_sort_unstable();
+
+        let has_duplicates = all_obs_ids.par_windows(2).any(|w| w[0] == w[1]);
+        !has_duplicates
     }
 }
 

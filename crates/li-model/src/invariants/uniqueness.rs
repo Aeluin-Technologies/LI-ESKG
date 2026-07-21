@@ -1,6 +1,8 @@
 //! Verification of Theorem 3 (Identity Uniqueness).
 
-use alloc::collections::BTreeMap;
+use alloc::vec::Vec;
+
+use rayon::prelude::*;
 
 use crate::graph::KnowledgeGraph;
 use crate::invariants::Invariant;
@@ -21,36 +23,49 @@ pub struct IdentityUniquenessInvariant;
 
 impl<G> Invariant<G> for IdentityUniquenessInvariant
 where
-    G: KnowledgeGraph + SupportSetQuery + IdentitySetQuery,
+    G: KnowledgeGraph + SupportSetQuery + IdentitySetQuery + Sync,
 {
-    /// Evaluates structural identity constraints across active sets.
+    /// Evaluates structural identity constraints across active sets in
+    /// parallel.
     fn verify(&self, graph: &G) -> bool {
-        let mut global_footprints = BTreeMap::new();
+        let active_identities = graph.all_identities();
+        let local_footprints: Option<Vec<Vec<_>>> = active_identities
+            .into_par_iter()
+            .map(|id| {
+                let support = graph.query_support_set(id);
+                let mut footprints = Vec::with_capacity(support.len());
 
-        for id in graph.all_identities() {
-            let support = graph.query_support_set(id);
-
-            for obs in support {
-                let footprint = (obs.timestamp, obs.modality);
-
-                if let Some(&existing_identity_id) =
-                    global_footprints.get(&footprint)
-                {
-                    if existing_identity_id != id {
-                        return false;
-                    }
-                } else {
-                    global_footprints.insert(footprint, id);
+                for obs in support {
+                    footprints.push(((obs.timestamp, obs.modality), id));
                 }
-            }
-        }
 
-        true
+                Some(footprints)
+            })
+            .collect();
+
+        let footprints_lists = match local_footprints {
+            Some(lists) => lists,
+            None => return false,
+        };
+
+        let mut all_footprints: Vec<_> =
+            footprints_lists.into_iter().flatten().collect();
+        all_footprints.par_sort_unstable_by_key(|(fp, _)| *fp);
+
+        let has_conflict = all_footprints.par_windows(2).any(|w| {
+            let (fp1, id1) = &w[0];
+            let (fp2, id2) = &w[1];
+
+            fp1 == fp2 && id1 != id2
+        });
+
+        !has_conflict
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use alloc::collections::BTreeMap;
     use alloc::vec;
     use alloc::vec::Vec;
 
@@ -61,6 +76,7 @@ mod tests {
 
     use super::*;
     use crate::graph::KnowledgeGraph;
+    use crate::queries::{IdentitySetQuery, SupportSetQuery};
 
     struct MockGraph {
         identities: Vec<IdentityId>,
