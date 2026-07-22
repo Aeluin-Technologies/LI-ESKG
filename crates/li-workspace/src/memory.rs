@@ -1,9 +1,7 @@
 //! Tree-backed in-memory implementation of the `ActiveWorkspace` trait.
 
-use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
-use core::hash::{Hash, Hasher};
 
 use li_core::belief::BeliefState;
 use li_core::ids::IdentityId;
@@ -14,11 +12,8 @@ use crate::checkpoint::WorkspaceSnapshot;
 use crate::eviction::{EvictionPolicy, TemporalEvictionPolicy};
 use crate::workspace::ActiveWorkspace;
 
-/// Number of internal shards used to partition belief states.
-const NUM_SHARDS: usize = 16;
-
 /// Threshold below which sequential iteration is used.
-const PARALLEL_THRESHOLD: usize = 10_000;
+const PARALLEL_THRESHOLD: usize = 20_000;
 
 /// Holds active identity hypotheses in memory during real-time tracking,
 /// providing logarithmic lookup, insertion, and key-ordered operations.
@@ -26,89 +21,27 @@ const PARALLEL_THRESHOLD: usize = 10_000;
 pub struct InMemoryWorkspace<S> {
     /// Map linking persistent identity identifiers to their active belief
     /// states.
-    pub shards: Box<[BTreeMap<IdentityId, BeliefState<S>>]>,
-    /// Bitmask (16 bits) tracking non-empty shards to skip empty iteration.
-    active_mask: u16,
-    /// Total number of active beliefs across all shards.
-    total_len: usize,
+    pub beliefs: BTreeMap<IdentityId, BeliefState<S>>,
 }
 
 impl<S> InMemoryWorkspace<S> {
     /// Constructs a new, empty [`InMemoryWorkspace`].
     pub fn new() -> Self {
-        let mut shards = Vec::with_capacity(NUM_SHARDS);
-        for _ in 0..NUM_SHARDS {
-            shards.push(BTreeMap::new());
-        }
         Self {
-            shards: shards.into_boxed_slice(),
-            active_mask: 0,
-            total_len: 0,
+            beliefs: BTreeMap::new(),
         }
     }
 
-    #[inline]
-    fn shard_index(id: IdentityId) -> usize {
-        struct FastHasher(u64);
-        impl Hasher for FastHasher {
-            #[inline]
-            fn finish(&self) -> u64 {
-                self.0
-            }
-
-            #[inline]
-            fn write(&mut self, bytes: &[u8]) {
-                for &b in bytes {
-                    self.0 = self
-                        .0
-                        .wrapping_add(b as u64)
-                        .wrapping_mul(0x9e37_79b9_7f4a_7c15);
-                }
-            }
-
-            #[inline]
-            fn write_u64(&mut self, i: u64) {
-                let mut x = i;
-                x = (x ^ (x >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-                x = (x ^ (x >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-                self.0 = x ^ (x >> 31);
-            }
-        }
-
-        let mut hasher = FastHasher(0);
-        id.hash(&mut hasher);
-        (hasher.finish() as usize) & (NUM_SHARDS - 1)
-    }
-
-    /// Fast iterator over active (non-empty) shards using hardware trailing
-    /// zeros instruction (`tzcnt`).
-    #[inline]
-    fn active_shards_iter(
-        &self,
-    ) -> impl Iterator<Item = (usize, &BTreeMap<IdentityId, BeliefState<S>>)>
-    {
-        let mut mask = self.active_mask;
-        core::iter::from_fn(move || {
-            if mask == 0 {
-                None
-            } else {
-                let tz = mask.trailing_zeros() as usize;
-                mask &= mask - 1; // Clear lowest set bit.
-                Some((tz, &self.shards[tz]))
-            }
-        })
-    }
-
-    /// Returns the total number of elements stored across all shards.
+    /// Returns the total number of elements stored.
     #[inline]
     pub fn len(&self) -> usize {
-        self.total_len
+        self.beliefs.len()
     }
 
     /// Returns `true` if the workspace contains no elements.
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.total_len == 0
+        self.beliefs.is_empty()
     }
 }
 
@@ -134,12 +67,29 @@ impl<S: Clone + Send + Sync> ActiveWorkspace for InMemoryWorkspace<S> {
     ///
     /// * Time: $\mathcal{O}(\log |B_t|)$
     /// * Space: $\mathcal{O}(1)$ auxiliary allocation.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use li_core::belief::BeliefState;
+    /// use li_core::ids::IdentityId;
+    /// use li_core::observation::Timestamp;
+    /// use li_core::probability::Probability;
+    /// use li_workspace::{ActiveWorkspace, InMemoryWorkspace};
+    ///
+    /// let mut workspace = InMemoryWorkspace::<[f32; 2]>::new();
+    /// let belief = BeliefState {
+    ///     identity: IdentityId(101),
+    ///     summary: [0.5, 0.8],
+    ///     posterior: Probability::new(0.95),
+    ///     last_update: Timestamp(1000000),
+    /// };
+    ///
+    /// workspace.insert(belief);
+    /// assert!(workspace.get(IdentityId(101)).is_some());
+    /// ```
     fn insert(&mut self, belief: BeliefState<S>) {
-        let idx = Self::shard_index(belief.identity);
-        if self.shards[idx].insert(belief.identity, belief).is_none() {
-            self.total_len += 1;
-            self.active_mask |= 1 << idx;
-        }
+        self.beliefs.insert(belief.identity, belief);
     }
 
     /// Retrieves an immutable reference to an active belief state by its
@@ -159,8 +109,7 @@ impl<S: Clone + Send + Sync> ActiveWorkspace for InMemoryWorkspace<S> {
     /// * Time: $\mathcal{O}(\log |B_t|)$
     /// * Space: $\mathcal{O}(1)$
     fn get(&self, id: IdentityId) -> Option<&BeliefState<S>> {
-        let idx = Self::shard_index(id);
-        self.shards[idx].get(&id)
+        self.beliefs.get(&id)
     }
 
     /// Retrieves a mutable reference to an active belief state by its
@@ -180,8 +129,7 @@ impl<S: Clone + Send + Sync> ActiveWorkspace for InMemoryWorkspace<S> {
     /// * Time: $\mathcal{O}(\log |B_t|)$
     /// * Space: $\mathcal{O}(1)$
     fn get_mut(&mut self, id: IdentityId) -> Option<&mut BeliefState<S>> {
-        let idx = Self::shard_index(id);
-        self.shards[idx].get_mut(&id)
+        self.beliefs.get_mut(&id)
     }
 
     /// Collects immutable references to all currently active belief states.
@@ -195,19 +143,11 @@ impl<S: Clone + Send + Sync> ActiveWorkspace for InMemoryWorkspace<S> {
     /// * Time: $\mathcal{O}(|B_t|)$
     /// * Space: $\mathcal{O}(|B_t|)$ for the returned reference list.
     fn active_beliefs(&self) -> Vec<&BeliefState<S>> {
-        let mut out = Vec::with_capacity(self.total_len);
-
-        if self.total_len < PARALLEL_THRESHOLD {
-            for (_, shard) in self.active_shards_iter() {
-                out.extend(shard.values());
-            }
+        if self.beliefs.len() < PARALLEL_THRESHOLD {
+            self.beliefs.values().collect()
         } else {
-            out.par_extend(
-                self.shards.par_iter().flat_map_iter(|shard| shard.values()),
-            );
+            self.beliefs.par_iter().map(|(_, belief)| belief).collect()
         }
-
-        out
     }
 
     /// Evaluates all managed belief states against the temporal eviction
@@ -259,80 +199,43 @@ impl<S: Clone + Send + Sync> ActiveWorkspace for InMemoryWorkspace<S> {
         current_time: Timestamp,
         ttl_microseconds: i64,
     ) -> Vec<BeliefState<S>> {
-        let evicted: Vec<BeliefState<S>> =
-            if self.total_len < PARALLEL_THRESHOLD {
-                let policy = TemporalEvictionPolicy;
-                let mut res = Vec::new();
+        let policy = TemporalEvictionPolicy;
 
-                let mut mask = self.active_mask;
-                while mask != 0 {
-                    let idx = mask.trailing_zeros() as usize;
-                    mask &= mask - 1;
-
-                    let shard = &mut self.shards[idx];
-                    let mut expired_keys = Vec::new();
-
-                    for (id, belief) in shard.iter() {
-                        if policy.should_evict(
-                            belief,
-                            current_time,
-                            ttl_microseconds,
-                        ) {
-                            expired_keys.push(*id);
-                        }
-                    }
-
-                    for key in expired_keys {
-                        if let Some(belief) = shard.remove(&key) {
-                            res.push(belief);
-                        }
-                    }
-
-                    if shard.is_empty() {
-                        self.active_mask &= !(1 << idx);
-                    }
+        let expired_keys: Vec<IdentityId> = if self.beliefs.len() <
+            PARALLEL_THRESHOLD
+        {
+            let mut keys = Vec::new();
+            for (id, belief) in self.beliefs.iter() {
+                if policy.should_evict(belief, current_time, ttl_microseconds)
+                {
+                    keys.push(*id);
                 }
-                res
-            } else {
-                let items: Vec<BeliefState<S>> = self
-                    .shards
-                    .par_iter_mut()
-                    .flat_map_iter(|shard| {
-                        let policy = TemporalEvictionPolicy;
-                        let mut expired_keys = Vec::new();
-
-                        for (id, belief) in shard.iter() {
-                            if policy.should_evict(
-                                belief,
-                                current_time,
-                                ttl_microseconds,
-                            ) {
-                                expired_keys.push(*id);
-                            }
-                        }
-
-                        let mut evicted_items =
-                            Vec::with_capacity(expired_keys.len());
-                        for key in expired_keys {
-                            if let Some(belief) = shard.remove(&key) {
-                                evicted_items.push(belief);
-                            }
-                        }
-
-                        evicted_items
-                    })
-                    .collect();
-
-                for (idx, shard) in self.shards.iter().enumerate() {
-                    if shard.is_empty() {
-                        self.active_mask &= !(1 << idx);
+            }
+            keys
+        } else {
+            self.beliefs
+                .par_iter()
+                .filter_map(|(id, belief)| {
+                    if policy.should_evict(
+                        belief,
+                        current_time,
+                        ttl_microseconds,
+                    ) {
+                        Some(*id)
+                    } else {
+                        None
                     }
-                }
+                })
+                .collect()
+        };
 
-                items
-            };
+        let mut evicted = Vec::with_capacity(expired_keys.len());
+        for key in expired_keys {
+            if let Some(belief) = self.beliefs.remove(&key) {
+                evicted.push(belief);
+            }
+        }
 
-        self.total_len -= evicted.len();
         evicted
     }
 
@@ -355,19 +258,14 @@ impl<S: Clone + Send + Sync> ActiveWorkspace for InMemoryWorkspace<S> {
         &self,
         current_time: Timestamp,
     ) -> WorkspaceSnapshot<S> {
-        let mut active_states = Vec::with_capacity(self.total_len);
-
-        if self.total_len < PARALLEL_THRESHOLD {
-            for (_, shard) in self.active_shards_iter() {
-                active_states.extend(shard.values().cloned());
-            }
+        let active_states = if self.beliefs.len() < PARALLEL_THRESHOLD {
+            self.beliefs.values().cloned().collect()
         } else {
-            active_states.par_extend(
-                self.shards
-                    .par_iter()
-                    .flat_map_iter(|shard| shard.values().cloned()),
-            );
-        }
+            self.beliefs
+                .par_iter()
+                .map(|(_, belief)| belief.clone())
+                .collect()
+        };
 
         WorkspaceSnapshot {
             timestamp: current_time,
@@ -400,7 +298,6 @@ mod tests {
         assert_eq!(workspace.len(), 0);
         assert!(workspace.is_empty());
         assert!(workspace.active_beliefs().is_empty());
-        assert_eq!(workspace.shards.len(), NUM_SHARDS);
     }
 
     #[test]
