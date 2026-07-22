@@ -323,6 +323,10 @@ version = "0.1.0"
 [[package]]
 name = "li-workspace"
 version = "0.1.0"
+dependencies = [
+ "li-core",
+ "li-model",
+]
 
 [[package]]
 name = "libc"
