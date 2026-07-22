@@ -324,8 +324,11 @@ version = "0.1.0"
 name = "li-workspace"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "li-core",
  "li-model",
+ "rand",
+ "rand_chacha",
 ]
 
 [[package]]
