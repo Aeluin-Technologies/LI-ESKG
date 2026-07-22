@@ -12,6 +12,6 @@ li-core = { path = "../li-core", version = "0.1.0" }
 rayon = "1"
 
 [dev-dependencies]
-criterion = { version = "0.8", features = ["html_reports"] }
+criterion = { workspace = true }
 rand = "0.10"
 rand_chacha = "0.10"
