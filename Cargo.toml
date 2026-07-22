@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "benchmarks",
     "crates/li-core",
     "crates/li-factors",
     "crates/li-inference",
@@ -10,9 +11,6 @@ members = [
     "python"
 ]
 resolver = "2"
-
-[workspace.dependencies]
-criterion = { version = "0.8", features = ["html_reports"] }
 
 [profile.bench]
 lto = true

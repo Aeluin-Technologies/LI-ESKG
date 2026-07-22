@@ -1,0 +1,24 @@
+[package]
+name = "benchmarks"
+description = "LI-ESKG benchmarks."
+edition = "2024"
+version = "1.0.0"
+publish = false
+
+[dependencies]
+# criterion = { version = "0.8", features = ["html_reports"] }
+criterion = { version = "5.0.1", features = ["html_reports"], package = "codspeed-criterion-compat" }
+rand = "0.10"
+rand_chacha = "0.10"
+
+li-core = { path = "../crates/li-core" }
+li-model = { path = "../crates/li-model" }
+li-workspace = { path = "../crates/li-workspace" }
+
+[[bench]]
+name = "invariant_benches"
+harness = false
+
+[[bench]]
+name = "workspace_bench"
+harness = false
