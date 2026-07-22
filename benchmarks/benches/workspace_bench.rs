@@ -1,6 +1,7 @@
-//! Benchmark suite for `InMemoryWorkspace` operations using Criterion.
+//! Benchmark suite for `InMemoryWorkspace` operations.
 
 use std::hint::black_box;
+use std::time::Duration;
 
 use criterion::{
     BatchSize, BenchmarkId, Criterion, Throughput, criterion_group,
@@ -53,32 +54,34 @@ fn setup_workspace(
 
 fn bench_workspace_insert(c: &mut Criterion) {
     let mut group = c.benchmark_group("InMemoryWorkspace::insert");
+    group.sample_size(10);
+    group.warm_up_time(Duration::from_secs(1));
 
     for size in &[100, 1_000, 10_000, 100_000] {
         let size = *size;
         group.throughput(Throughput::Elements(1));
 
+        let mut rng = ChaCha8Rng::seed_from_u64(1337);
+        let workspace = setup_workspace(size as u64, 1_000_000, &mut rng);
+
+        let new_belief = BeliefState {
+            identity: IdentityId((size / 2) as u64),
+            summary: TrackingSummary::default(),
+            posterior: Probability::new(0.99),
+            last_update: Timestamp(1_000_100),
+        };
+
         group.bench_with_input(
             BenchmarkId::new("insert_existing_tree", size),
             &size,
-            |b, &size| {
-                let mut rng = ChaCha8Rng::seed_from_u64(1337);
-                let workspace =
-                    setup_workspace(size as u64, 1_000_000, &mut rng);
-
-                let new_belief = BeliefState {
-                    identity: IdentityId((size / 2) as u64),
-                    summary: TrackingSummary::default(),
-                    posterior: Probability::new(0.99),
-                    last_update: Timestamp(1_000_100),
-                };
-
+            |b, _| {
                 b.iter_batched(
                     || (workspace.clone(), new_belief.clone()),
                     |(mut ws, belief)| {
                         ws.insert(belief);
+                        black_box(ws);
                     },
-                    BatchSize::SmallInput,
+                    BatchSize::LargeInput,
                 );
             },
         );
@@ -88,6 +91,8 @@ fn bench_workspace_insert(c: &mut Criterion) {
 
 fn bench_workspace_lookup(c: &mut Criterion) {
     let mut group = c.benchmark_group("InMemoryWorkspace::get");
+    group.sample_size(10);
+    group.warm_up_time(Duration::from_secs(1));
 
     for size in &[100, 1_000, 10_000, 100_000] {
         let size = *size;
@@ -101,8 +106,8 @@ fn bench_workspace_lookup(c: &mut Criterion) {
             &size,
             |b, _| {
                 b.iter(|| {
-                    let res = workspace.get(target_id);
-                    black_box(res);
+                    // Un seul black_box sur le résultat du get
+                    black_box(workspace.get(target_id));
                 });
             },
         );
@@ -113,8 +118,7 @@ fn bench_workspace_lookup(c: &mut Criterion) {
             &size,
             |b, _| {
                 b.iter(|| {
-                    let res = workspace.get(missing_id);
-                    black_box(res);
+                    black_box(workspace.get(missing_id));
                 });
             },
         );
@@ -124,6 +128,8 @@ fn bench_workspace_lookup(c: &mut Criterion) {
 
 fn bench_workspace_active_beliefs(c: &mut Criterion) {
     let mut group = c.benchmark_group("InMemoryWorkspace::active_beliefs");
+    group.sample_size(10);
+    group.warm_up_time(Duration::from_secs(1));
 
     for size in &[100, 1_000, 10_000, 100_000] {
         let size = *size;
@@ -136,8 +142,7 @@ fn bench_workspace_active_beliefs(c: &mut Criterion) {
             &size,
             |b, _| {
                 b.iter(|| {
-                    let beliefs = workspace.active_beliefs();
-                    black_box(beliefs);
+                    black_box(workspace.active_beliefs());
                 });
             },
         );
@@ -147,64 +152,63 @@ fn bench_workspace_active_beliefs(c: &mut Criterion) {
 
 fn bench_workspace_eviction(c: &mut Criterion) {
     let mut group = c.benchmark_group("InMemoryWorkspace::evict_expired");
+    group.sample_size(10);
+    group.warm_up_time(Duration::from_secs(1));
 
     for size in &[100, 1_000, 10_000, 50_000] {
         let size = *size as u64;
+        let mut template_10 = InMemoryWorkspace::new();
+        for i in 1..=size {
+            let last_update = if i <= size / 10 { 100 } else { 1_000_000 };
+            template_10.insert(BeliefState {
+                identity: IdentityId(i),
+                summary: TrackingSummary::default(),
+                posterior: Probability::new(0.8),
+                last_update: Timestamp(last_update),
+            });
+        }
 
         group.bench_with_input(
             BenchmarkId::new("evict_ratio_10_percent", size),
             &size,
-            |b, &size| {
+            |b, _| {
                 b.iter_batched(
-                    || {
-                        let mut ws = InMemoryWorkspace::new();
-                        for i in 1..=size {
-                            let last_update =
-                                if i <= size / 10 { 100 } else { 1_000_000 };
-                            ws.insert(BeliefState {
-                                identity: IdentityId(i),
-                                summary: TrackingSummary::default(),
-                                posterior: Probability::new(0.8),
-                                last_update: Timestamp(last_update),
-                            });
-                        }
-                        ws
-                    },
+                    || template_10.clone(),
                     |mut ws| {
                         let evicted =
                             ws.evict_expired(Timestamp(1_000_000), 500_000);
                         black_box(evicted);
+                        black_box(ws);
                     },
-                    BatchSize::SmallInput,
+                    BatchSize::LargeInput,
                 );
             },
         );
 
+        let mut template_50 = InMemoryWorkspace::new();
+        for i in 1..=size {
+            let last_update = if i % 2 == 0 { 100 } else { 1_000_000 };
+            template_50.insert(BeliefState {
+                identity: IdentityId(i),
+                summary: TrackingSummary::default(),
+                posterior: Probability::new(0.8),
+                last_update: Timestamp(last_update),
+            });
+        }
+
         group.bench_with_input(
             BenchmarkId::new("evict_ratio_50_percent", size),
             &size,
-            |b, &size| {
+            |b, _| {
                 b.iter_batched(
-                    || {
-                        let mut ws = InMemoryWorkspace::new();
-                        for i in 1..=size {
-                            let last_update =
-                                if i % 2 == 0 { 100 } else { 1_000_000 };
-                            ws.insert(BeliefState {
-                                identity: IdentityId(i),
-                                summary: TrackingSummary::default(),
-                                posterior: Probability::new(0.8),
-                                last_update: Timestamp(last_update),
-                            });
-                        }
-                        ws
-                    },
+                    || template_50.clone(),
                     |mut ws| {
                         let evicted =
                             ws.evict_expired(Timestamp(1_000_000), 500_000);
                         black_box(evicted);
+                        black_box(ws);
                     },
-                    BatchSize::SmallInput,
+                    BatchSize::LargeInput,
                 );
             },
         );
@@ -214,6 +218,8 @@ fn bench_workspace_eviction(c: &mut Criterion) {
 
 fn bench_workspace_snapshot(c: &mut Criterion) {
     let mut group = c.benchmark_group("InMemoryWorkspace::create_snapshot");
+    group.sample_size(10);
+    group.warm_up_time(Duration::from_secs(1));
 
     for size in &[100, 1_000, 10_000, 100_000] {
         let size = *size;
@@ -226,9 +232,10 @@ fn bench_workspace_snapshot(c: &mut Criterion) {
             &size,
             |b, _| {
                 b.iter(|| {
-                    let snapshot =
-                        workspace.create_snapshot(Timestamp(1_000_000));
-                    black_box(snapshot);
+                    black_box(
+                        workspace
+                            .create_snapshot(black_box(Timestamp(1_000_000))),
+                    );
                 });
             },
         );

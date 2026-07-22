@@ -1,4 +1,8 @@
-use std::collections::BTreeMap;
+//! Benchmark suite for invariants.
+
+use std::collections::HashMap;
+use std::hint::black_box;
+use std::time::Duration;
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use li_core::ids::{IdentityId, ObservationId, VertexId};
@@ -19,8 +23,8 @@ use rand_chacha::rand_core::SeedableRng;
 
 pub struct MockGraph {
     pub identities: Vec<IdentityId>,
-    pub support_sets: BTreeMap<u64, Vec<Observation<()>>>,
-    pub edges: BTreeMap<u64, Vec<Edge>>,
+    pub support_sets: HashMap<u64, Vec<Observation<()>>>,
+    pub edges: HashMap<u64, Vec<Edge>>,
 }
 
 impl KnowledgeGraph for MockGraph {
@@ -71,9 +75,11 @@ fn generate_valid_bench_graph(
     obs_per_identity: u64,
     noise_edges: u64,
 ) -> MockGraph {
-    let mut identities = Vec::new();
-    let mut support_sets = BTreeMap::new();
-    let mut edges = BTreeMap::new();
+    let mut identities = Vec::with_capacity(num_identities as usize);
+    let mut support_sets = HashMap::with_capacity(num_identities as usize);
+    let mut edges: HashMap<u64, Vec<Edge>> = HashMap::with_capacity(
+        (num_identities * obs_per_identity + noise_edges) as usize,
+    );
 
     let mut rng = ChaCha8Rng::seed_from_u64(1337);
     let mut current_obs_id = num_identities + 1;
@@ -82,7 +88,8 @@ fn generate_valid_bench_graph(
         let identity_id = IdentityId(id_idx);
         identities.push(identity_id);
 
-        let mut current_identity_support = Vec::new();
+        let mut current_identity_support =
+            Vec::with_capacity(obs_per_identity as usize);
 
         for _ in 0..obs_per_identity {
             let obs_raw_id = current_obs_id;
@@ -103,10 +110,7 @@ fn generate_valid_bench_graph(
                 created_at: Timestamp(0),
             };
 
-            edges
-                .entry(obs_raw_id)
-                .or_insert_with(Vec::new)
-                .push(support_edge);
+            edges.entry(obs_raw_id).or_default().push(support_edge);
         }
 
         support_sets.insert(identity_id.0, current_identity_support);
@@ -124,7 +128,7 @@ fn generate_valid_bench_graph(
             created_at: Timestamp(0),
         };
 
-        edges.entry(src).or_insert_with(Vec::new).push(noise_edge);
+        edges.entry(src).or_default().push(noise_edge);
     }
 
     MockGraph {
@@ -136,6 +140,9 @@ fn generate_valid_bench_graph(
 
 fn bench_observation_partition(c: &mut Criterion) {
     let mut group = c.benchmark_group("Observation Partition Verification");
+
+    group.sample_size(10);
+    group.warm_up_time(Duration::from_secs(1));
 
     for size in &[50, 250, 1000, 1_000_000] {
         let num_identities = *size;
@@ -154,7 +161,7 @@ fn bench_observation_partition(c: &mut Criterion) {
             &graph,
             |b, g| {
                 b.iter(|| {
-                    let _is_valid = invariant.verify(g);
+                    black_box(invariant.verify(g));
                 });
             },
         );
@@ -164,6 +171,8 @@ fn bench_observation_partition(c: &mut Criterion) {
 
 fn bench_identity_uniqueness(c: &mut Criterion) {
     let mut group = c.benchmark_group("Identity Uniqueness Verification");
+    group.sample_size(10);
+    group.warm_up_time(Duration::from_secs(1));
 
     for size in &[50, 250, 1000, 1_000_000] {
         let num_identities = *size;
@@ -182,7 +191,7 @@ fn bench_identity_uniqueness(c: &mut Criterion) {
             &graph,
             |b, g| {
                 b.iter(|| {
-                    let _is_valid = invariant.verify(g);
+                    black_box(invariant.verify(g));
                 });
             },
         );
