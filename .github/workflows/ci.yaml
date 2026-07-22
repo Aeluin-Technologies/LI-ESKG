@@ -23,9 +23,10 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@nightly
+      - name: Setup Rust (Nightly)
+        uses: moonrepo/setup-rust@v1
         with:
+          channel: nightly  # because our formatting need nightly channel.
           components: rustfmt
 
       - name: Cargo fmt
@@ -41,13 +42,11 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+      - name: Setup Rust
+        uses: moonrepo/setup-rust@v1
         with:
+          channel: stable
           components: clippy
-
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
 
       - name: Clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
@@ -70,13 +69,10 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+      - name: Setup Rust
+        uses: moonrepo/setup-rust@v1
         with:
-          toolchain: ${{ matrix.rust }}
-
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
+          channel: ${{ matrix.rust }}
 
       - name: Build & Test
         run: cargo test --all-features --locked
@@ -84,117 +80,28 @@ jobs:
   benchmark:
     name: Run benchmarks
     needs: [clippy]
-    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      pull-requests: write
+      id-token: write
 
     steps:
       - name: Checkout the repo
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
         with:
           persist-credentials: false
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
-
-      - name: Run Benchmarks
-        run: cargo bench
-
-      - name: Generate PR Comment from Criterion JSON
-        run: |
-          python3 - << 'EOF'
-          import json, glob, os, re
-
-          def natural_keys(text):
-              return [int(c) if c.isdigit() else c.lower() for c in re.split(r"(\d+)", text)]
-
-          def format_time(ns):
-              if ns >= 1_000_000_000:
-                  return f"{ns / 1_000_000_000:.2f} s", 1_000_000_000, "s"
-              elif ns >= 1_000_000:
-                  return f"{ns / 1_000_000:.2f} ms", 1_000_000, "ms"
-              elif ns >= 1_000:
-                  return f"{ns / 1_000:.2f} µs", 1_000, "µs"
-              else:
-                  return f"{ns:.2f} ns", 1, "ns"
-
-          def format_throughput(tp, point_ns):
-              if not tp or point_ns <= 0:
-                  return "-"
-              sec = point_ns / 1e9
-              if "Elements" in tp:
-                  rate = tp["Elements"] / sec
-                  if rate >= 1e9: return f"{rate / 1e9:.2f} Gelem/s"
-                  if rate >= 1e6: return f"{rate / 1e6:.2f} Melem/s"
-                  if rate >= 1e3: return f"{rate / 1e3:.2f} Kelem/s"
-                  return f"{rate:.2f} elem/s"
-              elif "Bytes" in tp:
-                  rate = tp["Bytes"] / sec
-                  if rate >= 1e9: return f"{rate / 1e9:.2f} GB/s"
-                  if rate >= 1e6: return f"{rate / 1e6:.2f} MB/s"
-                  if rate >= 1e3: return f"{rate / 1e3:.2f} KB/s"
-                  return f"{rate:.2f} B/s"
-              return "-"
-
-          results = []
-          estimates_files = glob.glob("target/criterion/**/new/estimates.json", recursive=True)
-
-          for path in estimates_files:
-              folder = os.path.dirname(path)
-              bench_json = os.path.join(folder, "benchmark.json")
-              if not os.path.exists(bench_json):
-                  bench_json = os.path.join(os.path.dirname(folder), "benchmark.json")
-
-              bench_name = ""
-              tp_obj = None
-              if os.path.exists(bench_json):
-                  with open(bench_json) as f:
-                      bdata = json.load(f)
-                      bench_name = bdata.get("full_id") or bdata.get("title") or ""
-                      tp_obj = bdata.get("throughput")
-
-              if not bench_name:
-                  parts = path.split(os.sep)
-                  bench_name = "/".join(parts[2:-2])
-
-              with open(path) as f:
-                  edata = json.load(f)
-                  mean = edata["mean"]
-                  point = mean["point_estimate"]
-                  ci = mean["confidence_interval"]
-                  margin = (ci["upper_bound"] - ci["lower_bound"]) / 2
-
-                  val_str, scale, unit = format_time(point)
-                  margin_str = f"{margin / scale:.2f}"
-                  time_str = f"{val_str} ± {margin_str} {unit}"
-                  tp_str = format_throughput(tp_obj, point)
-
-                  results.append({
-                      "name": bench_name,
-                      "time": time_str,
-                      "throughput": tp_str
-                  })
-
-          results.sort(key=lambda x: natural_keys(x["name"]))
-
-          with open("comment.md", "w") as f:
-              f.write("### 📊 Benchmark Results\n\n")
-              f.write("| Benchmark | Mean Time | Throughput |\n")
-              f.write("| :--- | :---: | :---: |\n")
-              for r in results:
-                  name = r["name"]
-                  time_val = r["time"]
-                  tp_val = r["throughput"]
-                  f.write(f"| `{name}` | **{time_val}** | {tp_val} |\n")
-          EOF
-
-      - name: Post PR Comment
-        uses: peter-evans/create-or-update-comment@v5
+      - name: Setup Rust & cargo-codspeed
+        uses: moonrepo/setup-rust@v1
         with:
-          issue-number: ${{ github.event.pull_request.number }}
-          body-path: 'comment.md'
+          channel: stable
+          bins: cargo-codspeed
+
+      - name: Build benchmarks
+        run: cargo codspeed build
+
+      - name: Run benchmarks with CodSpeed
+        uses: CodSpeedHQ/action@v4
+        with:
+          run: cargo codspeed run
+          mode: simulation
