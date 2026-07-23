@@ -144,7 +144,7 @@ fn bench_observation_partition(c: &mut Criterion) {
     group.sample_size(10);
     group.warm_up_time(Duration::from_secs(1));
 
-    for size in &[50, 250, 1000, 1_000_000] {
+    for size in &[100_000, 1_000_000] {
         let num_identities = *size;
         let obs_per_identity = 5;
         let noise_edges = num_identities * 15;
@@ -174,7 +174,7 @@ fn bench_identity_uniqueness(c: &mut Criterion) {
     group.sample_size(10);
     group.warm_up_time(Duration::from_secs(1));
 
-    for size in &[50, 250, 1000, 1_000_000] {
+    for size in &[100_000, 1_000_000] {
         let num_identities = *size;
         let obs_per_identity = 5;
         let noise_edges = num_identities * 15;

@@ -57,7 +57,7 @@ fn bench_workspace_insert(c: &mut Criterion) {
     group.sample_size(10);
     group.warm_up_time(Duration::from_secs(1));
 
-    for size in &[100, 1_000, 10_000, 100_000] {
+    for size in &[100_000, 1_000_000] {
         let size = *size;
         group.throughput(Throughput::Elements(1));
 
@@ -94,7 +94,7 @@ fn bench_workspace_lookup(c: &mut Criterion) {
     group.sample_size(10);
     group.warm_up_time(Duration::from_secs(1));
 
-    for size in &[100, 1_000, 10_000, 100_000] {
+    for size in &[100_000, 1_000_000] {
         let size = *size;
         let mut rng = ChaCha8Rng::seed_from_u64(42);
         let workspace = setup_workspace(size as u64, 1_000_000, &mut rng);
@@ -131,7 +131,7 @@ fn bench_workspace_active_beliefs(c: &mut Criterion) {
     group.sample_size(10);
     group.warm_up_time(Duration::from_secs(1));
 
-    for size in &[100, 1_000, 10_000, 100_000] {
+    for size in &[100_000, 1_000_000] {
         let size = *size;
         let mut rng = ChaCha8Rng::seed_from_u64(1337);
         let workspace = setup_workspace(size as u64, 1_000_000, &mut rng);
@@ -155,7 +155,7 @@ fn bench_workspace_eviction(c: &mut Criterion) {
     group.sample_size(10);
     group.warm_up_time(Duration::from_secs(1));
 
-    for size in &[100, 1_000, 10_000, 50_000] {
+    for size in &[100_000, 1_000_000] {
         let size = *size as u64;
         let mut template_10 = InMemoryWorkspace::new();
         for i in 1..=size {
@@ -221,7 +221,7 @@ fn bench_workspace_snapshot(c: &mut Criterion) {
     group.sample_size(10);
     group.warm_up_time(Duration::from_secs(1));
 
-    for size in &[100, 1_000, 10_000, 100_000] {
+    for size in &[100_000, 1_000_000] {
         let size = *size;
         let mut rng = ChaCha8Rng::seed_from_u64(1337);
         let workspace = setup_workspace(size as u64, 1_000_000, &mut rng);
