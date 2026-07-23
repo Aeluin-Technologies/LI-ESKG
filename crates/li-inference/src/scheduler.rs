@@ -194,7 +194,6 @@ where
 #[cfg(test)]
 mod tests {
     use alloc::boxed::Box;
-    use alloc::collections::BTreeMap;
     use alloc::vec::Vec;
 
     use li_core::belief::BeliefState;
@@ -207,7 +206,7 @@ mod tests {
     use li_factors::factor::{Factor, FactorScope};
     use li_model::graph::KnowledgeGraph;
     use li_model::operations::GraphOperation;
-    use li_workspace::checkpoint::WorkspaceSnapshot;
+    use li_workspace::InMemoryWorkspace;
     use li_workspace::workspace::ActiveWorkspace;
 
     use crate::bp::{BeliefPropagationSolver, BpConfig};
@@ -244,51 +243,6 @@ mod tests {
                 Self::StatePayload,
             >,
         ) {
-        }
-    }
-
-    struct MockWorkspace {
-        beliefs: BTreeMap<IdentityId, BeliefState<MockSummary>>,
-    }
-
-    impl ActiveWorkspace for MockWorkspace {
-        type Summary = MockSummary;
-
-        fn insert(&mut self, belief: BeliefState<Self::Summary>) {
-            self.beliefs.insert(belief.identity, belief);
-        }
-
-        fn get(&self, id: IdentityId) -> Option<&BeliefState<Self::Summary>> {
-            self.beliefs.get(&id)
-        }
-
-        fn get_mut(
-            &mut self,
-            id: IdentityId,
-        ) -> Option<&mut BeliefState<Self::Summary>> {
-            self.beliefs.get_mut(&id)
-        }
-
-        fn active_beliefs(&self) -> Vec<&BeliefState<Self::Summary>> {
-            self.beliefs.values().collect()
-        }
-
-        fn evict_expired(
-            &mut self,
-            _current_time: Timestamp,
-            _ttl: i64,
-        ) -> Vec<BeliefState<Self::Summary>> {
-            Vec::new()
-        }
-
-        fn create_snapshot(
-            &self,
-            current_time: Timestamp,
-        ) -> WorkspaceSnapshot<Self::Summary> {
-            WorkspaceSnapshot {
-                timestamp: current_time,
-                active_states: Vec::new(),
-            }
         }
     }
 
@@ -356,9 +310,7 @@ mod tests {
         let mut graph = MockGraph {
             vertices: Vec::new(),
         };
-        let mut workspace = MockWorkspace {
-            beliefs: BTreeMap::new(),
-        };
+        let mut workspace = InMemoryWorkspace::<MockSummary>::new();
         let compiler = MockCompiler { return_value: 0.9 };
 
         let evidence = Evidence {
@@ -400,9 +352,7 @@ mod tests {
         let mut graph = MockGraph {
             vertices: alloc::vec![VertexId(10)],
         };
-        let mut workspace = MockWorkspace {
-            beliefs: BTreeMap::new(),
-        };
+        let mut workspace = InMemoryWorkspace::<MockSummary>::new();
         workspace.insert(BeliefState {
             identity: IdentityId(10),
             summary: MockSummary,
@@ -451,9 +401,7 @@ mod tests {
         let mut graph = MockGraph {
             vertices: alloc::vec![VertexId(10)],
         };
-        let mut workspace = MockWorkspace {
-            beliefs: BTreeMap::new(),
-        };
+        let mut workspace = InMemoryWorkspace::<MockSummary>::new();
         workspace.insert(BeliefState {
             identity: IdentityId(10),
             summary: MockSummary,

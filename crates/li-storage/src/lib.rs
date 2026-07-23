@@ -1,14 +1,10 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+//! # LI-ESKG storage layer
+//!
+//! This crate defines persistent storage driver abstractions and database
+//! sinks for the Latent Identity Event-State Knowledge Graph (LI-ESKG)
+//! framework.
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+#![no_std]
+#![deny(unsafe_code, missing_docs)]
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+extern crate alloc;

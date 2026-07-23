@@ -106,7 +106,7 @@ impl FactorGraph {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use alloc::boxed::Box;
     use alloc::vec::Vec;
 
@@ -116,19 +116,20 @@ mod tests {
 
     use crate::factor_graph::FactorGraph;
 
-    struct DummyFactor {
-        scope_ids: Vec<IdentityId>,
+    pub(crate) struct ConstantFactor {
+        pub scope_ids: Vec<IdentityId>,
+        pub value: f64,
     }
 
-    impl FactorScope for DummyFactor {
+    impl FactorScope for ConstantFactor {
         fn scope(&self) -> &[IdentityId] {
             &self.scope_ids
         }
     }
 
-    impl Factor for DummyFactor {
+    impl Factor for ConstantFactor {
         fn evaluate(&self, _assignment: &[IdentityId]) -> Probability {
-            Probability::new(1.0)
+            Probability::new(self.value)
         }
     }
 
@@ -147,8 +148,9 @@ mod tests {
         let v0 = graph.add_variable(IdentityId(1));
         let v1 = graph.add_variable(IdentityId(2));
 
-        let factor = Box::new(DummyFactor {
+        let factor = Box::new(ConstantFactor {
             scope_ids: alloc::vec![IdentityId(1), IdentityId(2)],
+            value: 1.0,
         });
 
         let f0 = graph.add_factor(factor, &[v0, v1]);

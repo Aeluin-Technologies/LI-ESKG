@@ -82,74 +82,15 @@ where
 
 #[cfg(test)]
 mod tests {
-    use alloc::collections::BTreeMap;
-    use alloc::vec;
-    use alloc::vec::Vec;
-
     use li_core::IdentityId;
     use li_core::ids::ObservationId;
     use li_core::observation::{Modality, Observation, Timestamp};
-    use li_core::ontology::Vertex;
     use li_core::probability::Confidence;
 
     use super::*;
-
-    struct MockGraph {
-        identities: Vec<IdentityId>,
-        support_sets: BTreeMap<IdentityId, Vec<Observation<()>>>,
-        out_edges: BTreeMap<VertexId, Vec<Edge>>,
-    }
-
-    impl KnowledgeGraph for MockGraph {
-        type EventPayload = ();
-        type ObservationPayload = ();
-        type StatePayload = ();
-
-        fn vertex_type(&self, _id: VertexId) -> Option<Vertex> {
-            None
-        }
-
-        fn apply(
-            &mut self,
-            _op: crate::operations::GraphOperation<(), (), ()>,
-        ) {
-        }
-    }
-
-    impl IdentitySetQuery for MockGraph {
-        fn all_identities(&self) -> Vec<IdentityId> {
-            self.identities.clone()
-        }
-    }
-
-    impl SupportSetQuery for MockGraph {
-        fn query_support_set(
-            &self,
-            identity: IdentityId,
-        ) -> Vec<&Observation<()>> {
-            self.support_sets
-                .get(&identity)
-                .map(|v| v.iter().collect())
-                .unwrap_or_default()
-        }
-    }
-
-    impl NeighborhoodQuery for MockGraph {
-        type EdgeRef<'a>
-            = &'a Edge
-        where
-            Self: 'a;
-
-        fn out_edges<'a>(
-            &'a self,
-            source: VertexId,
-        ) -> Vec<Self::EdgeRef<'a>> {
-            self.out_edges
-                .get(&source)
-                .map(|v| v.iter().collect())
-                .unwrap_or_default()
-        }
-    }
+    use crate::memory::MemoryGraph;
+    use crate::ontology::IdentityNode;
+    use crate::operations::GraphOperation;
 
     fn create_observation(id: u64) -> Observation<()> {
         Observation {
@@ -161,122 +102,110 @@ mod tests {
         }
     }
 
-    fn create_edge(source: u64, target: u64, relation: Relation) -> Edge {
-        Edge {
-            source: VertexId(source),
-            relation,
-            target: VertexId(target),
-            created_at: Timestamp(0),
-        }
-    }
-
     #[test]
     fn test_empty_graph_passes_vacuously() {
-        let graph = MockGraph {
-            identities: Vec::new(),
-            support_sets: BTreeMap::new(),
-            out_edges: BTreeMap::new(),
-        };
+        let graph: MemoryGraph<(), (), ()> = MemoryGraph::new();
         assert!(ObservationPartitionInvariant.verify(&graph));
     }
 
     #[test]
     fn test_perfect_disjoint_partition_passes() {
+        let mut graph: MemoryGraph<(), (), ()> = MemoryGraph::new();
         let id_a = IdentityId(10);
         let id_b = IdentityId(20);
         let obs_1 = create_observation(1);
         let obs_2 = create_observation(2);
 
-        let mut support_sets = BTreeMap::new();
-        support_sets.insert(id_a, vec![obs_1]);
-        support_sets.insert(id_b, vec![obs_2]);
+        graph.apply(GraphOperation::CommitIdentity(IdentityNode {
+            id: id_a,
+            created_at: Timestamp(0),
+        }));
+        graph.apply(GraphOperation::CommitIdentity(IdentityNode {
+            id: id_b,
+            created_at: Timestamp(0),
+        }));
+        graph.apply(GraphOperation::CommitObservation(obs_1.clone()));
+        graph.apply(GraphOperation::CommitObservation(obs_2.clone()));
 
-        let mut out_edges = BTreeMap::new();
-        out_edges.insert(
-            VertexId(1),
-            vec![create_edge(1, id_a.0, Relation::Supports)],
-        );
-        out_edges.insert(
-            VertexId(2),
-            vec![create_edge(2, id_b.0, Relation::Supports)],
-        );
-
-        let graph = MockGraph {
-            identities: vec![id_a, id_b],
-            support_sets,
-            out_edges,
-        };
+        graph.apply(GraphOperation::CommitRelation {
+            source: VertexId(obs_1.id.0),
+            relation: Relation::Supports,
+            target: VertexId(id_a.0),
+            created_at: Timestamp(0),
+        });
+        graph.apply(GraphOperation::CommitRelation {
+            source: VertexId(obs_2.id.0),
+            relation: Relation::Supports,
+            target: VertexId(id_b.0),
+            created_at: Timestamp(0),
+        });
 
         assert!(ObservationPartitionInvariant.verify(&graph));
     }
 
     #[test]
     fn test_empty_identity_support_set_fails() {
+        let mut graph: MemoryGraph<(), (), ()> = MemoryGraph::new();
         let id_a = IdentityId(10);
+        graph.apply(GraphOperation::CommitIdentity(IdentityNode {
+            id: id_a,
+            created_at: Timestamp(0),
+        }));
 
-        let graph = MockGraph {
-            identities: vec![id_a],
-            support_sets: BTreeMap::new(),
-            out_edges: BTreeMap::new(),
-        };
-
-        // Fails because every active identity must have a non-empty support
-        // set.
         assert!(!ObservationPartitionInvariant.verify(&graph));
     }
 
     #[test]
     fn test_shared_observation_across_identities_fails() {
+        let mut graph: MemoryGraph<(), (), ()> = MemoryGraph::new();
         let id_a = IdentityId(10);
         let id_b = IdentityId(20);
         let shared_obs = create_observation(100);
 
-        let mut support_sets = BTreeMap::new();
-        // Overlap: Both tracking hypotheses pull the exact same physical
-        // measurement
-        support_sets.insert(id_a, vec![shared_obs.clone()]);
-        support_sets.insert(id_b, vec![shared_obs]);
+        graph.apply(GraphOperation::CommitIdentity(IdentityNode {
+            id: id_a,
+            created_at: Timestamp(0),
+        }));
+        graph.apply(GraphOperation::CommitIdentity(IdentityNode {
+            id: id_b,
+            created_at: Timestamp(0),
+        }));
+        graph.apply(GraphOperation::CommitObservation(shared_obs.clone()));
 
-        let mut out_edges = BTreeMap::new();
-        out_edges.insert(
-            VertexId(100),
-            vec![
-                create_edge(100, id_a.0, Relation::Supports),
-                create_edge(100, id_b.0, Relation::Supports),
-            ],
-        );
+        graph.apply(GraphOperation::CommitRelation {
+            source: VertexId(shared_obs.id.0),
+            relation: Relation::Supports,
+            target: VertexId(id_a.0),
+            created_at: Timestamp(0),
+        });
+        graph.apply(GraphOperation::CommitRelation {
+            source: VertexId(shared_obs.id.0),
+            relation: Relation::Supports,
+            target: VertexId(id_b.0),
+            created_at: Timestamp(0),
+        });
 
-        let graph = MockGraph {
-            identities: vec![id_a, id_b],
-            support_sets,
-            out_edges,
-        };
-
-        // Fails because the subsets are not disjoint.
         assert!(!ObservationPartitionInvariant.verify(&graph));
     }
 
     #[test]
     fn test_mismatched_edge_target_fails() {
+        let mut graph: MemoryGraph<(), (), ()> = MemoryGraph::new();
         let id_a = IdentityId(10);
         let obs = create_observation(1);
 
-        let mut support_sets = BTreeMap::new();
-        support_sets.insert(id_a, vec![obs]);
+        graph.apply(GraphOperation::CommitIdentity(IdentityNode {
+            id: id_a,
+            created_at: Timestamp(0),
+        }));
+        graph.apply(GraphOperation::CommitObservation(obs.clone()));
 
-        let mut out_edges = BTreeMap::new();
-        // Malformed topology: Query returns it for Identity A, but the actual
-        // edge targets 999
-        out_edges.insert(
-            VertexId(1),
-            vec![create_edge(1, 999, Relation::Supports)],
-        );
-
-        let graph = MockGraph {
-            identities: vec![id_a],
-            support_sets,
-            out_edges,
-        };
+        graph.apply(GraphOperation::CommitRelation {
+            source: VertexId(obs.id.0),
+            relation: Relation::Supports,
+            target: VertexId(999),
+            created_at: Timestamp(0),
+        });
 
         assert!(!ObservationPartitionInvariant.verify(&graph));
     }

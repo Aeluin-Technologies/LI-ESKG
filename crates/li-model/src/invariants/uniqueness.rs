@@ -65,57 +65,18 @@ where
 
 #[cfg(test)]
 mod tests {
-    use alloc::collections::BTreeMap;
     use alloc::vec;
     use alloc::vec::Vec;
 
     use li_core::ids::{IdentityId, ObservationId, VertexId};
     use li_core::observation::{Modality, Observation, Timestamp};
-    use li_core::ontology::Vertex;
     use li_core::probability::Confidence;
+    use li_core::relation::Relation;
 
     use super::*;
-    use crate::graph::KnowledgeGraph;
-    use crate::queries::{IdentitySetQuery, SupportSetQuery};
-
-    struct MockGraph {
-        identities: Vec<IdentityId>,
-        support_sets: BTreeMap<IdentityId, Vec<Observation<()>>>,
-    }
-
-    impl KnowledgeGraph for MockGraph {
-        type EventPayload = ();
-        type ObservationPayload = ();
-        type StatePayload = ();
-
-        fn vertex_type(&self, _id: VertexId) -> Option<Vertex> {
-            None
-        }
-
-        fn apply(
-            &mut self,
-            _op: crate::operations::GraphOperation<(), (), ()>,
-        ) {
-        }
-    }
-
-    impl IdentitySetQuery for MockGraph {
-        fn all_identities(&self) -> Vec<IdentityId> {
-            self.identities.clone()
-        }
-    }
-
-    impl SupportSetQuery for MockGraph {
-        fn query_support_set(
-            &self,
-            identity: IdentityId,
-        ) -> Vec<&Observation<()>> {
-            self.support_sets
-                .get(&identity)
-                .map(|vec| vec.iter().collect())
-                .unwrap_or_default()
-        }
-    }
+    use crate::memory::MemoryGraph;
+    use crate::ontology::IdentityNode;
+    use crate::operations::GraphOperation;
 
     fn create_mock_observation(
         id: u64,
@@ -131,13 +92,32 @@ mod tests {
         }
     }
 
+    fn build_graph(
+        identities: Vec<(IdentityId, Vec<Observation<()>>)>,
+    ) -> MemoryGraph<(), (), ()> {
+        let mut graph = MemoryGraph::new();
+        for (id, obs_list) in identities {
+            graph.apply(GraphOperation::CommitIdentity(IdentityNode {
+                id,
+                created_at: Timestamp(0),
+            }));
+            for obs in obs_list {
+                let obs_vid = VertexId(obs.id.0);
+                graph.apply(GraphOperation::CommitObservation(obs));
+                graph.apply(GraphOperation::CommitRelation {
+                    source: obs_vid,
+                    relation: Relation::Supports,
+                    target: VertexId(id.0),
+                    created_at: Timestamp(0),
+                });
+            }
+        }
+        graph
+    }
+
     #[test]
     fn test_empty_graph_passes() {
-        let graph = MockGraph {
-            identities: Vec::new(),
-            support_sets: BTreeMap::new(),
-        };
-
+        let graph = build_graph(Vec::new());
         assert!(IdentityUniquenessInvariant.verify(&graph));
     }
 
@@ -145,37 +125,18 @@ mod tests {
     fn test_single_identity_passes() {
         let id = IdentityId(1);
         let obs = create_mock_observation(10, 1710000000, 1);
-
-        let mut support_sets = BTreeMap::new();
-        support_sets.insert(id, vec![obs]);
-
-        let graph = MockGraph {
-            identities: vec![id],
-            support_sets,
-        };
-
+        let graph = build_graph(vec![(id, vec![obs])]);
         assert!(IdentityUniquenessInvariant.verify(&graph));
     }
 
     #[test]
     fn test_same_time_different_modality_passes() {
-        // Theorem 3 allows concurrent measurements if they stem from separate
-        // sensor channels.
         let id_a = IdentityId(1);
         let id_b = IdentityId(2);
-
-        let obs_a = create_mock_observation(10, 1710000000, 1); // Modality 1
-        let obs_b = create_mock_observation(11, 1710000000, 2); // Modality 2
-
-        let mut support_sets = BTreeMap::new();
-        support_sets.insert(id_a, vec![obs_a]);
-        support_sets.insert(id_b, vec![obs_b]);
-
-        let graph = MockGraph {
-            identities: vec![id_a, id_b],
-            support_sets,
-        };
-
+        let obs_a = create_mock_observation(10, 1710000000, 1);
+        let obs_b = create_mock_observation(11, 1710000000, 2);
+        let graph =
+            build_graph(vec![(id_a, vec![obs_a]), (id_b, vec![obs_b])]);
         assert!(IdentityUniquenessInvariant.verify(&graph));
     }
 
@@ -183,19 +144,10 @@ mod tests {
     fn test_same_modality_different_time_passes() {
         let id_a = IdentityId(1);
         let id_b = IdentityId(2);
-
-        let obs_a = create_mock_observation(10, 1710000000, 1); // Time T1
-        let obs_b = create_mock_observation(11, 1710005000, 1); // Time T2
-
-        let mut support_sets = BTreeMap::new();
-        support_sets.insert(id_a, vec![obs_a]);
-        support_sets.insert(id_b, vec![obs_b]);
-
-        let graph = MockGraph {
-            identities: vec![id_a, id_b],
-            support_sets,
-        };
-
+        let obs_a = create_mock_observation(10, 1710000000, 1);
+        let obs_b = create_mock_observation(11, 171005000, 1);
+        let graph =
+            build_graph(vec![(id_a, vec![obs_a]), (id_b, vec![obs_b])]);
         assert!(IdentityUniquenessInvariant.verify(&graph));
     }
 
@@ -203,40 +155,19 @@ mod tests {
     fn test_direct_spatiotemporal_collision_fails() {
         let id_a = IdentityId(1);
         let id_b = IdentityId(2);
-
-        // Two distinct identities claim the same snapshot on the same channel.
         let obs_a = create_mock_observation(10, 1710000000, 1);
         let obs_b = create_mock_observation(11, 1710000000, 1);
-
-        let mut support_sets = BTreeMap::new();
-        support_sets.insert(id_a, vec![obs_a]);
-        support_sets.insert(id_b, vec![obs_b]);
-
-        let graph = MockGraph {
-            identities: vec![id_a, id_b],
-            support_sets,
-        };
-
+        let graph =
+            build_graph(vec![(id_a, vec![obs_a]), (id_b, vec![obs_b])]);
         assert!(!IdentityUniquenessInvariant.verify(&graph));
     }
 
     #[test]
     fn test_self_duplicate_observation_footprint_passes() {
-        // If an identity's query returns duplicate observations or entries
-        // with the exact same timestamp/modality, it should not trip a
-        // self-collision.
         let id = IdentityId(1);
         let obs_a = create_mock_observation(10, 1710000000, 1);
-        let obs_b = create_mock_observation(10, 1710000000, 1); // Duplicate tracking
-
-        let mut support_sets = BTreeMap::new();
-        support_sets.insert(id, vec![obs_a, obs_b]);
-
-        let graph = MockGraph {
-            identities: vec![id],
-            support_sets,
-        };
-
+        let obs_b = create_mock_observation(10, 1710000000, 1);
+        let graph = build_graph(vec![(id, vec![obs_a, obs_b])]);
         assert!(IdentityUniquenessInvariant.verify(&graph));
     }
 }

@@ -83,30 +83,13 @@ impl BeliefPropagationSolver {
 #[cfg(test)]
 mod tests {
     use alloc::boxed::Box;
-    use alloc::vec::Vec;
 
     use li_core::ids::IdentityId;
     use li_core::probability::Probability;
-    use li_factors::factor::{Factor, FactorScope};
 
     use crate::bp::{BeliefPropagationSolver, BpConfig};
     use crate::factor_graph::FactorGraph;
-
-    struct ZeroFactor {
-        scope_ids: Vec<IdentityId>,
-    }
-
-    impl FactorScope for ZeroFactor {
-        fn scope(&self) -> &[IdentityId] {
-            &self.scope_ids
-        }
-    }
-
-    impl Factor for ZeroFactor {
-        fn evaluate(&self, _assignment: &[IdentityId]) -> Probability {
-            Probability::new(0.0)
-        }
-    }
+    use crate::factor_graph::tests::ConstantFactor;
 
     #[test]
     fn test_bp_empty_graph() {
@@ -147,8 +130,9 @@ mod tests {
         let mut graph = FactorGraph::new();
         let v0 = graph.add_variable(IdentityId(1));
 
-        let factor = Box::new(ZeroFactor {
+        let factor = Box::new(ConstantFactor {
             scope_ids: alloc::vec![IdentityId(1)],
+            value: 0.0,
         });
         graph.add_factor(factor, &[v0]);
 
