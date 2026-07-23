@@ -427,6 +427,12 @@ dependencies = [
 [[package]]
 name = "li-inference"
 version = "0.1.0"
+dependencies = [
+ "li-core",
+ "li-factors",
+ "li-model",
+ "li-workspace",
+]
 
 [[package]]
 name = "li-model"

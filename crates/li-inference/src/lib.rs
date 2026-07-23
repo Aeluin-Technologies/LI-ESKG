@@ -1,14 +1,21 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+//! # LI-ESKG probabilistic inference engine
+//!
+//! This crate implements the ephemeral factor graph compilation, Sum-Product
+//! Belief Propagation, MAP decision estimation, and the operational pipeline
+//! orchestration specified in Algorithm 1.
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+#![no_std]
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+extern crate alloc;
+
+pub mod bp;
+pub mod factor_graph;
+pub mod map;
+pub mod posterior;
+pub mod scheduler;
+
+pub use bp::*;
+pub use factor_graph::*;
+pub use map::*;
+pub use posterior::*;
+pub use scheduler::*;
