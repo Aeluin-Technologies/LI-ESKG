@@ -420,6 +420,9 @@ version = "0.1.0"
 [[package]]
 name = "li-factors"
 version = "0.1.0"
+dependencies = [
+ "li-core",
+]
 
 [[package]]
 name = "li-inference"
