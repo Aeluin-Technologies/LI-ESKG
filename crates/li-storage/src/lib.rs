@@ -4,7 +4,21 @@
 //! sinks for the Latent Identity Event-State Knowledge Graph (LI-ESKG)
 //! framework.
 
-#![no_std]
-#![deny(unsafe_code, missing_docs)]
+#![cfg_attr(not(feature = "std"), no_std)]
+#![deny(unsafe_code)]
 
 extern crate alloc;
+
+pub mod backend;
+pub mod errors;
+pub mod keys;
+pub mod postcard_adapter;
+pub mod store;
+pub mod traits;
+
+pub use backend::MemoryKvBackend;
+#[cfg(feature = "std")]
+pub use backend::RocksDbBackend;
+pub use errors::StorageError;
+pub use store::StorageEngine;
+pub use traits::{CheckpointStore, KvBackend, WalStore};
