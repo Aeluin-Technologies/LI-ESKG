@@ -4,3 +4,9 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+li-core = { path = "../li-core" }
+li-workspace = { path = "../li-workspace" }
+li-factors = { path = "../li-factors" }
+li-inference = { path = "../li-inference" }
+li-model = { path = "../li-model" }
+li-storage = { path = "../li-storage" }

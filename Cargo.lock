@@ -590,6 +590,14 @@ dependencies = [
 [[package]]
 name = "li-runtime"
 version = "0.1.0"
+dependencies = [
+ "li-core",
+ "li-factors",
+ "li-inference",
+ "li-model",
+ "li-storage",
+ "li-workspace",
+]
 
 [[package]]
 name = "li-storage"
