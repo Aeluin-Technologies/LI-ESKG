@@ -28,11 +28,11 @@ where
     /// Evaluates partition properties by inspecting active identity support
     /// sets in parallel and tracking cross-boundary uniqueness constraints.
     fn verify(&self, graph: &G) -> bool {
-        let active_identities = graph.all_identities();
+        let active_identities = IdentitySetQuery::all_identities(graph);
         let local_results: Option<Vec<Vec<_>>> = active_identities
             .into_par_iter()
             .map(|id| {
-                let support = graph.query_support_set(id);
+                let support = SupportSetQuery::query_support_set(graph, id);
 
                 if support.is_empty() {
                     return None;
@@ -42,11 +42,11 @@ where
 
                 for obs in support {
                     let vid = VertexId(obs.id.0);
-                    let out_edges = graph.out_edges(vid);
+                    let out_edges = NeighborhoodQuery::out_edges(graph, vid);
                     let mut supports_relation_count = 0;
 
                     for edge_ref in out_edges {
-                        let edge = edge_ref.deref();
+                        let edge: &Edge = edge_ref.deref();
                         if edge.relation == Relation::Supports {
                             supports_relation_count += 1;
                             if edge.target != VertexId(id.0) {
@@ -66,7 +66,7 @@ where
             })
             .collect();
 
-        let obs_lists = match local_results {
+        let obs_lists: Vec<Vec<_>> = match local_results {
             Some(lists) => lists,
             None => return false,
         };

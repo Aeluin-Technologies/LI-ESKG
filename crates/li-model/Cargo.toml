@@ -6,3 +6,4 @@ edition = "2024"
 [dependencies]
 li-core = { path = "../li-core", version = "0.1.0" }
 rayon = "1"
+serde = { version = "1", features = ["derive", "alloc"] }

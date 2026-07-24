@@ -28,11 +28,11 @@ where
     /// Evaluates structural identity constraints across active sets in
     /// parallel.
     fn verify(&self, graph: &G) -> bool {
-        let active_identities = graph.all_identities();
+        let active_identities = IdentitySetQuery::all_identities(graph);
         let local_footprints: Option<Vec<Vec<_>>> = active_identities
             .into_par_iter()
             .map(|id| {
-                let support = graph.query_support_set(id);
+                let support = SupportSetQuery::query_support_set(graph, id);
                 let mut footprints = Vec::with_capacity(support.len());
 
                 for obs in support {
@@ -43,7 +43,7 @@ where
             })
             .collect();
 
-        let footprints_lists = match local_footprints {
+        let footprints_lists: Vec<Vec<_>> = match local_footprints {
             Some(lists) => lists,
             None => return false,
         };
