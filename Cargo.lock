@@ -65,7 +65,9 @@ version = "1.0.0"
 dependencies = [
  "codspeed-criterion-compat",
  "li-core",
+ "li-factors",
  "li-model",
+ "li-runtime",
  "li-workspace",
  "rand",
  "rand_chacha",

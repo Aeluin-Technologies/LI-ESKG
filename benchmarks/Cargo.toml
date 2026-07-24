@@ -14,9 +14,15 @@ rand_chacha = "0.10"
 li-core = { path = "../crates/li-core" }
 li-model = { path = "../crates/li-model" }
 li-workspace = { path = "../crates/li-workspace" }
+li-factors = { path = "../crates/li-factors" }
+li-runtime = { path = "../crates/li-runtime" }
 
 [[bench]]
 name = "invariant_benches"
+harness = false
+
+[[bench]]
+name = "runtime_benches"
 harness = false
 
 [[bench]]
