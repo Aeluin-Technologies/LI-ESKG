@@ -16,9 +16,6 @@ use rand::RngExt;
 use rand_chacha::ChaCha8Rng;
 use rand_chacha::rand_core::SeedableRng;
 
-/// Represents $b_i = (\theta_i, \Sigma_i)$ from Theorem 7 of the LI-ESKG
-/// paper. Stores continuous state embedding (mean vector) and spatial motion
-/// dynamics (covariance).
 #[derive(Debug, Clone, PartialEq)]
 pub struct TrackingSummary {
     pub mean: [f64; 4],
@@ -54,31 +51,47 @@ fn setup_workspace(
 
 fn bench_workspace_insert(c: &mut Criterion) {
     let mut group = c.benchmark_group("InMemoryWorkspace::insert");
-    group.sample_size(10);
-    group.warm_up_time(Duration::from_secs(1));
+
+    // Plus de temps et d'échantillons pour garantir la stabilité
+    group.warm_up_time(Duration::from_secs(3));
+    group.measurement_time(Duration::from_secs(15));
+    group.sample_size(20);
+
+    const BATCH_SIZE: u64 = 1_000;
 
     for size in &[100_000, 1_000_000] {
         let size = *size;
-        group.throughput(Throughput::Elements(1));
-
-        let mut rng = ChaCha8Rng::seed_from_u64(1337);
-        let workspace = setup_workspace(size as u64, 1_000_000, &mut rng);
-
-        let new_belief = BeliefState {
-            identity: IdentityId((size / 2) as u64),
-            summary: TrackingSummary::default(),
-            posterior: Probability::new(0.99),
-            last_update: Timestamp(1_000_100),
-        };
+        group.throughput(Throughput::Elements(BATCH_SIZE));
 
         group.bench_with_input(
-            BenchmarkId::new("insert_existing_tree", size),
+            BenchmarkId::new("insert_batch_1000", size),
             &size,
             |b, _| {
+                // Utilisation d'un lot de 1 000 éléments :
+                // On amortit le clone de setup sur 1000 insertions
                 b.iter_batched(
-                    || (workspace.clone(), new_belief.clone()),
-                    |(mut ws, belief)| {
-                        ws.insert(belief);
+                    || {
+                        let mut rng = ChaCha8Rng::seed_from_u64(1337);
+                        let ws =
+                            setup_workspace(size as u64, 1_000_000, &mut rng);
+
+                        let batch: Vec<_> = (0..BATCH_SIZE)
+                            .map(|i| BeliefState {
+                                identity: IdentityId(
+                                    (size as u64) + i + 10_000,
+                                ),
+                                summary: TrackingSummary::default(),
+                                posterior: Probability::new(0.99),
+                                last_update: Timestamp(1_000_100),
+                            })
+                            .collect();
+
+                        (ws, batch)
+                    },
+                    |(mut ws, batch)| {
+                        for belief in batch {
+                            ws.insert(belief);
+                        }
                         black_box(ws);
                     },
                     BatchSize::LargeInput,
@@ -91,8 +104,12 @@ fn bench_workspace_insert(c: &mut Criterion) {
 
 fn bench_workspace_lookup(c: &mut Criterion) {
     let mut group = c.benchmark_group("InMemoryWorkspace::get");
-    group.sample_size(10);
-    group.warm_up_time(Duration::from_secs(1));
+
+    // Les lookups sont en nanosecondes : 50 échantillons apportent une
+    // excellente métrique
+    group.warm_up_time(Duration::from_secs(3));
+    group.measurement_time(Duration::from_secs(10));
+    group.sample_size(50);
 
     for size in &[100_000, 1_000_000] {
         let size = *size;
@@ -106,7 +123,6 @@ fn bench_workspace_lookup(c: &mut Criterion) {
             &size,
             |b, _| {
                 b.iter(|| {
-                    // Un seul black_box sur le résultat du get
                     black_box(workspace.get(target_id));
                 });
             },
@@ -128,8 +144,10 @@ fn bench_workspace_lookup(c: &mut Criterion) {
 
 fn bench_workspace_active_beliefs(c: &mut Criterion) {
     let mut group = c.benchmark_group("InMemoryWorkspace::active_beliefs");
-    group.sample_size(10);
-    group.warm_up_time(Duration::from_secs(1));
+
+    group.warm_up_time(Duration::from_secs(3));
+    group.measurement_time(Duration::from_secs(12));
+    group.sample_size(30);
 
     for size in &[100_000, 1_000_000] {
         let size = *size;
@@ -152,14 +170,20 @@ fn bench_workspace_active_beliefs(c: &mut Criterion) {
 
 fn bench_workspace_eviction(c: &mut Criterion) {
     let mut group = c.benchmark_group("InMemoryWorkspace::evict_expired");
-    group.sample_size(10);
-    group.warm_up_time(Duration::from_secs(1));
+
+    // L'éviction nécessite une copie fraîche du workspace par échantillon :
+    // On passe à 20s de temps de mesure pour laisser le temps nécessaire sur
+    // 1M d'éléments
+    group.warm_up_time(Duration::from_secs(3));
+    group.measurement_time(Duration::from_secs(20));
+    group.sample_size(15);
 
     for size in &[100_000, 1_000_000] {
-        let size = *size as u64;
+        let size_u64 = *size as u64;
+
         let mut template_10 = InMemoryWorkspace::new();
-        for i in 1..=size {
-            let last_update = if i <= size / 10 { 100 } else { 1_000_000 };
+        for i in 1..=size_u64 {
+            let last_update = if i <= size_u64 / 10 { 100 } else { 1_000_000 };
             template_10.insert(BeliefState {
                 identity: IdentityId(i),
                 summary: TrackingSummary::default(),
@@ -169,8 +193,8 @@ fn bench_workspace_eviction(c: &mut Criterion) {
         }
 
         group.bench_with_input(
-            BenchmarkId::new("evict_ratio_10_percent", size),
-            &size,
+            BenchmarkId::new("evict_ratio_10_percent", size_u64),
+            &size_u64,
             |b, _| {
                 b.iter_batched(
                     || template_10.clone(),
@@ -186,7 +210,7 @@ fn bench_workspace_eviction(c: &mut Criterion) {
         );
 
         let mut template_50 = InMemoryWorkspace::new();
-        for i in 1..=size {
+        for i in 1..=size_u64 {
             let last_update = if i % 2 == 0 { 100 } else { 1_000_000 };
             template_50.insert(BeliefState {
                 identity: IdentityId(i),
@@ -197,8 +221,8 @@ fn bench_workspace_eviction(c: &mut Criterion) {
         }
 
         group.bench_with_input(
-            BenchmarkId::new("evict_ratio_50_percent", size),
-            &size,
+            BenchmarkId::new("evict_ratio_50_percent", size_u64),
+            &size_u64,
             |b, _| {
                 b.iter_batched(
                     || template_50.clone(),
@@ -218,8 +242,10 @@ fn bench_workspace_eviction(c: &mut Criterion) {
 
 fn bench_workspace_snapshot(c: &mut Criterion) {
     let mut group = c.benchmark_group("InMemoryWorkspace::create_snapshot");
-    group.sample_size(10);
-    group.warm_up_time(Duration::from_secs(1));
+
+    group.warm_up_time(Duration::from_secs(3));
+    group.measurement_time(Duration::from_secs(12));
+    group.sample_size(30);
 
     for size in &[100_000, 1_000_000] {
         let size = *size;
