@@ -1,6 +1,8 @@
 //! Structures representing active tracking configurations within the ephemeral
 //! layer.
 
+use serde::{Deserialize, Serialize};
+
 use crate::ids::IdentityId;
 use crate::observation::Timestamp;
 use crate::probability::Probability;
@@ -8,7 +10,7 @@ use crate::probability::Probability;
 /// State representation of a tracking hypothesis inside the active layer.
 /// Matches the theoretical formulation $b_i = (\theta, \Sigma, \Lambda)$ from
 /// the paper.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct BeliefState<S> {
     /// Target latent identity identifier.
     pub identity: IdentityId,

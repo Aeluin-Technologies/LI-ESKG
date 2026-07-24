@@ -1,10 +1,12 @@
 //! Formal schema validation models for vertex partitioning.
 
+use serde::{Deserialize, Serialize};
+
 use crate::ids::{EventId, IdentityId, ObservationId, StateId};
 
 /// Compile-time enforcement of the partitioned vertex set $V = O \sqcup I
 /// \sqcup E \sqcup S$.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Vertex {
     /// Empirical observation node entry ($O$).
     Observation(ObservationId),

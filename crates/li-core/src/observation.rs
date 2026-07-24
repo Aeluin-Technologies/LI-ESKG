@@ -2,21 +2,45 @@
 
 use alloc::vec::Vec;
 
+use serde::{Deserialize, Serialize};
+
 use crate::ids::{IdentityId, ObservationId};
 use crate::probability::Confidence;
 
 /// Monotonically increasing UNIX timestamp measured in microseconds.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Serialize,
+    Deserialize,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+)]
 pub struct Timestamp(pub i64);
 
 /// Unique modality identifier for incoming observation channels.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Serialize,
+    Deserialize,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+)]
 pub struct Modality(pub u32);
 
 /// Immutable empirical observation representing a physical world measurement.
 /// Matches the mathematical definition $o = (m, \rho, t, \sigma)$ from the
 /// paper.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct Observation<P> {
     /// Unique identifier of the observation.
     pub id: ObservationId,
@@ -33,7 +57,7 @@ pub struct Observation<P> {
 /// Structural evidence package combining an observation with its pre-filtered
 /// candidates. Serves as the primary operational data transfer object across
 /// the Python-Rust boundary.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct Evidence<P> {
     /// Underlying empirical observation data.
     pub observation: Observation<P>,

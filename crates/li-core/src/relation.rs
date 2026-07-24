@@ -1,7 +1,20 @@
 //! Semantic relation typings for edge classification.
 
+use serde::{Deserialize, Serialize};
+
 /// Classification of semantic edges allowed within the knowledge graph schema.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Deserialize,
+    Serialize,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+)]
 pub enum Relation {
     /// Causal event triggering a state transition ($E \times S \to R_{eskg}$).
     Trigger,

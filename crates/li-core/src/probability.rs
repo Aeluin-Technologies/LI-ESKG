@@ -1,7 +1,11 @@
 //! Mathematical primitives for probabilistic reasoning and scoring metrics.
 
+use serde::{Deserialize, Serialize};
+
 /// A continuous probability value.
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+#[derive(
+    Serialize, Deserialize, Debug, Clone, Copy, PartialEq, PartialOrd,
+)]
 pub struct Probability(pub f64);
 
 impl Probability {
@@ -20,5 +24,7 @@ impl Probability {
 
 /// An unnormalized confidence score representing measurement or prediction
 /// certainty.
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+#[derive(
+    Serialize, Deserialize, Debug, Clone, Copy, PartialEq, PartialOrd,
+)]
 pub struct Confidence(pub f64);
