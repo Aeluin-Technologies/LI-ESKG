@@ -80,13 +80,8 @@ pub fn encode_relation(relation: Relation) -> u8 {
 
 /// Encodes an outgoing edge into a 17-byte composite binary key.
 ///
-/// Args:
-///   source: Source vertex identifier.
-///   relation: Edge relation classification.
-///   target: Target vertex identifier.
-///
-/// Returns:
-///   Composite key byte vector.
+/// ## Returns
+/// Composite key byte vector.
 pub fn encode_out_edge_key(
     source: VertexId,
     relation: Relation,
@@ -101,13 +96,8 @@ pub fn encode_out_edge_key(
 
 /// Encodes an incoming edge into a 17-byte composite binary key.
 ///
-/// Args:
-///   target: Target vertex identifier.
-///   relation: Edge relation classification.
-///   source: Source vertex identifier.
-///
-/// Returns:
-///   Composite key byte vector.
+/// ## Returns:
+/// Composite key byte vector.
 pub fn encode_in_edge_key(
     target: VertexId,
     relation: Relation,
@@ -123,12 +113,8 @@ pub fn encode_in_edge_key(
 /// Encodes a 9-byte prefix key for scanning incoming edges by target and
 /// relation.
 ///
-/// Args:
-///   target: Target vertex identifier.
-///   relation: Edge relation classification.
-///
-/// Returns:
-///   Prefix byte vector.
+/// ## Returns
+/// Prefix byte vector.
 pub fn encode_in_edge_prefix(target: VertexId, relation: Relation) -> Vec<u8> {
     let mut prefix = Vec::with_capacity(9);
     prefix.extend_from_slice(&encode_u64(target.0));

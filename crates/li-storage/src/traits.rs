@@ -9,7 +9,7 @@ use li_core::observation::Evidence;
 use crate::errors::StorageError;
 use crate::keys::ColumnFamily;
 
-type KvRecord = (Vec<u8>, Vec<u8>);
+pub type KvRecord = (Vec<u8>, Vec<u8>);
 
 /// Represents an atomic key-value operation within a storage batch.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -18,15 +18,6 @@ pub struct RocksDbBackend {
 impl RocksDbBackend {
     /// Opens or creates a RocksDB instance with required Column Families at
     /// path.
-    ///
-    /// Args:
-    ///   path: File system path to storage directory.
-    ///
-    /// Returns:
-    ///   Configured RocksDbBackend instance.
-    ///
-    /// Errors:
-    ///   StorageError::BackendError on initialization failure.
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, StorageError> {
         let mut db_opts = Options::default();
         db_opts.create_if_missing(true);
@@ -157,5 +148,94 @@ impl KvBackend for RocksDbBackend {
         self.db.write(write_batch).map_err(|_| {
             StorageError::BackendError("RocksDB write_batch commit failed")
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tempfile::tempdir;
+
+    use super::*;
+    use crate::keys::ColumnFamily;
+    use crate::traits::{KvBackend, KvOp};
+
+    #[test]
+    fn test_rocksdb_open_put_get_delete() {
+        let dir = tempdir().unwrap();
+        let mut backend = RocksDbBackend::open(dir.path()).unwrap();
+        let cf = ColumnFamily::Identities;
+        let key = b"id_key".to_vec();
+        let value = b"id_val".to_vec();
+
+        assert_eq!(backend.get(cf, &key).unwrap(), None);
+
+        let batch = vec![KvOp::Put {
+            cf,
+            key: key.clone(),
+            value: value.clone(),
+        }];
+        assert!(backend.apply_transaction(&batch).is_ok());
+
+        assert_eq!(backend.get(cf, &key).unwrap(), Some(value));
+
+        let del_batch = vec![KvOp::Delete {
+            cf,
+            key: key.clone(),
+        }];
+        assert!(backend.apply_transaction(&del_batch).is_ok());
+
+        assert_eq!(backend.get(cf, &key).unwrap(), None);
+    }
+
+    #[test]
+    fn test_rocksdb_prefix_scan_and_persistence() {
+        let dir = tempdir().unwrap();
+        let cf = ColumnFamily::WalObservations;
+
+        {
+            let mut backend = RocksDbBackend::open(dir.path()).unwrap();
+            let batch = vec![
+                KvOp::Put {
+                    cf,
+                    key: b"wal_001".to_vec(),
+                    value: b"payload1".to_vec(),
+                },
+                KvOp::Put {
+                    cf,
+                    key: b"wal_002".to_vec(),
+                    value: b"payload2".to_vec(),
+                },
+                KvOp::Put {
+                    cf,
+                    key: b"other_001".to_vec(),
+                    value: b"payload3".to_vec(),
+                },
+            ];
+            backend.apply_transaction(&batch).unwrap();
+
+            let scan = backend.prefix_scan(cf, b"wal_").unwrap();
+            assert_eq!(scan.len(), 2);
+            assert_eq!(scan[0], (b"wal_001".to_vec(), b"payload1".to_vec()));
+            assert_eq!(scan[1], (b"wal_002".to_vec(), b"payload2".to_vec()));
+        }
+
+        {
+            let backend = RocksDbBackend::open(dir.path()).unwrap();
+            assert_eq!(
+                backend.get(cf, b"wal_001").unwrap(),
+                Some(b"payload1".to_vec())
+            );
+        }
+    }
+
+    #[test]
+    fn test_rocksdb_edge_cases() {
+        let dir = tempdir().unwrap();
+        let mut backend = RocksDbBackend::open(dir.path()).unwrap();
+        let cf = ColumnFamily::Checkpoints;
+
+        assert!(backend.apply_transaction(&[]).is_ok());
+        assert_eq!(backend.get(cf, b"non_existent").unwrap(), None);
+        assert!(backend.prefix_scan(cf, b"non_existent").unwrap().is_empty());
     }
 }

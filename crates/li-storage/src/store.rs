@@ -32,11 +32,8 @@ pub struct StorageEngine<B, P, E, S> {
 impl<B: KvBackend, P, E, S> StorageEngine<B, P, E, S> {
     /// Constructs a StorageEngine wrapping the given backend driver.
     ///
-    /// Args:
-    ///   backend: Key-value driver instance.
-    ///
-    /// Returns:
-    ///   New StorageEngine instance.
+    /// ## Returns
+    /// New StorageEngine instance.
     pub fn new(backend: B) -> Self {
         Self {
             backend,
@@ -358,5 +355,301 @@ where
         }
 
         self.backend.apply_transaction(&batch)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::collections::BTreeMap;
+    use alloc::vec;
+    use alloc::vec::Vec;
+
+    use li_core::ids::{
+        EventId, IdentityId, ObservationId, StateId, VertexId,
+    };
+    use li_core::observation::{Evidence, Modality, Observation, Timestamp};
+    use li_core::probability::{Confidence, Probability};
+    use li_core::relation::Relation;
+    use li_model::ontology::{EventNode, IdentityNode, StateNode};
+
+    use super::*;
+    use crate::traits::KvRecord;
+
+    struct MemoryBackend {
+        storage: BTreeMap<ColumnFamily, BTreeMap<Vec<u8>, Vec<u8>>>,
+    }
+
+    impl MemoryBackend {
+        fn new() -> Self {
+            Self {
+                storage: BTreeMap::new(),
+            }
+        }
+    }
+
+    impl KvBackend for MemoryBackend {
+        fn get(
+            &self,
+            cf: ColumnFamily,
+            key: &[u8],
+        ) -> Result<Option<Vec<u8>>, StorageError> {
+            Ok(self.storage.get(&cf).and_then(|map| map.get(key).cloned()))
+        }
+
+        fn apply_transaction(
+            &mut self,
+            batch: &[KvOp],
+        ) -> Result<(), StorageError> {
+            for op in batch {
+                match op {
+                    KvOp::Put { cf, key, value } => {
+                        self.storage
+                            .entry(*cf)
+                            .or_default()
+                            .insert(key.clone(), value.clone());
+                    },
+                    KvOp::Delete { cf, key } => {
+                        if let Some(map) = self.storage.get_mut(cf) {
+                            map.remove(key);
+                        }
+                    },
+                }
+            }
+            Ok(())
+        }
+
+        fn prefix_scan(
+            &self,
+            cf: ColumnFamily,
+            prefix: &[u8],
+        ) -> Result<Vec<KvRecord>, StorageError> {
+            let mut results = Vec::new();
+            if let Some(map) = self.storage.get(&cf) {
+                for (k, v) in map.iter() {
+                    if k.starts_with(prefix) {
+                        results.push((k.clone(), v.clone()));
+                    }
+                }
+            }
+            Ok(results)
+        }
+    }
+
+    fn create_test_engine() -> StorageEngine<MemoryBackend, (), (), ()> {
+        StorageEngine::new(MemoryBackend::new())
+    }
+
+    fn mock_observation(id: u64) -> Observation<()> {
+        Observation {
+            id: ObservationId(id),
+            modality: Modality(1),
+            timestamp: Timestamp(1000),
+            confidence: Confidence(0.95),
+            payload: (),
+        }
+    }
+
+    #[test]
+    fn test_commit_and_query_vertices_happy_path() {
+        let mut engine = create_test_engine();
+
+        let obs = mock_observation(1);
+        let identity = IdentityNode {
+            id: IdentityId(10),
+            created_at: Timestamp(1000),
+        };
+        let event = EventNode {
+            id: EventId(20),
+            timestamp: Timestamp(1000),
+            payload: (),
+        };
+        let state = StateNode {
+            id: StateId(30),
+            timestamp: Timestamp(1000),
+            payload: (),
+        };
+
+        let ops = vec![
+            GraphOperation::CommitObservation(obs.clone()),
+            GraphOperation::CommitIdentity(identity),
+            GraphOperation::CommitEvent(event),
+            GraphOperation::CommitState(state),
+        ];
+
+        assert!(engine.apply_batch(&ops).is_ok());
+
+        assert_eq!(
+            engine.vertex_type(VertexId(1)).unwrap(),
+            Some(Vertex::Observation(ObservationId(1)))
+        );
+        assert_eq!(
+            engine.vertex_type(VertexId(10)).unwrap(),
+            Some(Vertex::Identity(IdentityId(10)))
+        );
+        assert_eq!(
+            engine.vertex_type(VertexId(20)).unwrap(),
+            Some(Vertex::Event(EventId(20)))
+        );
+        assert_eq!(
+            engine.vertex_type(VertexId(30)).unwrap(),
+            Some(Vertex::State(StateId(30)))
+        );
+
+        let fetched_obs = engine.fetch_observation(ObservationId(1)).unwrap();
+        assert_eq!(fetched_obs, Some(obs));
+    }
+
+    #[test]
+    fn test_relations_and_support_set_happy_path() {
+        let mut engine = create_test_engine();
+
+        let obs = mock_observation(100);
+        let identity = IdentityNode {
+            id: IdentityId(200),
+            created_at: Timestamp(1000),
+        };
+
+        let ops = vec![
+            GraphOperation::CommitObservation(obs.clone()),
+            GraphOperation::CommitIdentity(identity),
+            GraphOperation::CommitRelation {
+                source: VertexId(100),
+                relation: Relation::Supports,
+                target: VertexId(200),
+                created_at: Timestamp(1000),
+            },
+        ];
+
+        assert!(engine.apply_batch(&ops).is_ok());
+
+        let out_edges = engine.out_edges(VertexId(100)).unwrap();
+        assert_eq!(out_edges.len(), 1);
+        assert_eq!(out_edges[0].source, VertexId(100));
+        assert_eq!(out_edges[0].relation, Relation::Supports);
+        assert_eq!(out_edges[0].target, VertexId(200));
+
+        let support = engine.query_support_set(IdentityId(200)).unwrap();
+        assert_eq!(support.len(), 1);
+        assert_eq!(support[0], obs);
+    }
+
+    #[test]
+    fn test_all_identities_happy_path() {
+        let mut engine = create_test_engine();
+
+        let ops = vec![
+            GraphOperation::CommitIdentity(IdentityNode {
+                id: IdentityId(1),
+                created_at: Timestamp(100),
+            }),
+            GraphOperation::CommitIdentity(IdentityNode {
+                id: IdentityId(2),
+                created_at: Timestamp(200),
+            }),
+        ];
+
+        assert!(engine.apply_batch(&ops).is_ok());
+
+        let mut ids = engine.all_identities().unwrap();
+        ids.sort_by_key(|i| i.0);
+        assert_eq!(ids, vec![IdentityId(1), IdentityId(2)]);
+    }
+
+    #[test]
+    fn test_checkpoint_store_happy_path() {
+        let mut engine = create_test_engine();
+
+        let beliefs = vec![
+            BeliefState {
+                identity: IdentityId(1),
+                summary: (),
+                posterior: Probability::new(0.8),
+                last_update: Timestamp(500),
+            },
+            BeliefState {
+                identity: IdentityId(2),
+                summary: (),
+                posterior: Probability::new(0.3),
+                last_update: Timestamp(600),
+            },
+        ];
+
+        assert!(engine.save_checkpoint(&beliefs).is_ok());
+
+        let loaded = engine.load_latest_checkpoint().unwrap();
+        assert_eq!(loaded.len(), 2);
+    }
+
+    #[test]
+    fn test_wal_store_happy_path() {
+        let mut engine = create_test_engine();
+
+        let ev1 = Evidence {
+            observation: mock_observation(10),
+            candidates: vec![IdentityId(1)],
+        };
+        let ev2 = Evidence {
+            observation: mock_observation(11),
+            candidates: vec![IdentityId(2)],
+        };
+
+        let seq1 = engine.append_evidence(&ev1).unwrap();
+        let seq2 = engine.append_evidence(&ev2).unwrap();
+
+        assert_eq!(seq1, 1);
+        assert_eq!(seq2, 2);
+
+        let deltas = engine.read_delta(1).unwrap();
+        assert_eq!(deltas.len(), 2);
+
+        let deltas_from_2 = engine.read_delta(2).unwrap();
+        assert_eq!(deltas_from_2.len(), 1);
+
+        assert!(engine.truncate_up_to(1).is_ok());
+
+        let deltas_after_trunc = engine.read_delta(1).unwrap();
+        assert_eq!(deltas_after_trunc.len(), 1);
+    }
+
+    #[test]
+    fn test_edge_case_fetch_nonexistent_entities() {
+        let engine = create_test_engine();
+
+        assert_eq!(
+            engine.fetch_observation(ObservationId(999)).unwrap(),
+            None
+        );
+        assert_eq!(engine.vertex_type(VertexId(999)).unwrap(), None);
+        assert!(engine.out_edges(VertexId(999)).unwrap().is_empty());
+        assert!(
+            engine
+                .query_support_set(IdentityId(999))
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn test_edge_case_empty_batch_and_empty_queries() {
+        let mut engine = create_test_engine();
+
+        assert!(engine.apply_batch(&[]).is_ok());
+        assert!(engine.all_identities().unwrap().is_empty());
+        assert!(engine.load_latest_checkpoint().unwrap().is_empty());
+        assert!(engine.read_delta(0).unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_edge_case_wal_truncate_nonexistent_sequences() {
+        let mut engine = create_test_engine();
+
+        let ev = Evidence {
+            observation: mock_observation(1),
+            candidates: vec![],
+        };
+        engine.append_evidence(&ev).unwrap();
+
+        assert!(engine.truncate_up_to(999).is_ok());
+        assert!(engine.read_delta(0).unwrap().is_empty());
     }
 }
