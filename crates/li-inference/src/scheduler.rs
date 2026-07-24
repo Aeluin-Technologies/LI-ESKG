@@ -104,8 +104,10 @@ where
     ) -> Vec<GraphOperation<P, E, S>> {
         let mut active_beliefs = Vec::with_capacity(evidence.candidates.len());
         for &candidate_id in &evidence.candidates {
-            let vertex_exists =
-                graph.vertex_type(VertexId(candidate_id.0)).is_some();
+            let vertex_exists = matches!(
+                graph.vertex_type(VertexId(candidate_id.0)),
+                Ok(Some(_))
+            );
 
             if let Some(belief) = workspace.get(candidate_id) {
                 active_beliefs.push(belief.clone());
@@ -195,6 +197,7 @@ where
 mod tests {
     use alloc::boxed::Box;
     use alloc::vec::Vec;
+    use core::convert::Infallible;
 
     use li_core::belief::BeliefState;
     use li_core::ids::{IdentityId, ObservationId, VertexId};
@@ -204,6 +207,7 @@ mod tests {
     use li_core::relation::Relation;
     use li_factors::compiler::FactorCompiler;
     use li_factors::factor::{Factor, FactorScope};
+    use li_model::Edge;
     use li_model::graph::KnowledgeGraph;
     use li_model::operations::GraphOperation;
     use li_workspace::InMemoryWorkspace;
@@ -223,26 +227,51 @@ mod tests {
     }
 
     impl KnowledgeGraph for MockGraph {
+        type Error = Infallible;
         type EventPayload = MockPayload;
         type ObservationPayload = MockPayload;
         type StatePayload = MockSummary;
 
-        fn vertex_type(&self, id: VertexId) -> Option<Vertex> {
+        fn vertex_type(
+            &self,
+            id: VertexId,
+        ) -> Result<Option<Vertex>, Self::Error> {
             if self.vertices.contains(&id) {
-                Some(Vertex::Identity(IdentityId(id.0)))
+                Ok(Some(Vertex::Identity(IdentityId(id.0))))
             } else {
-                None
+                Ok(None)
             }
         }
 
-        fn apply(
+        fn apply_batch(
             &mut self,
-            _op: GraphOperation<
+            _ops: &[GraphOperation<
                 Self::ObservationPayload,
                 Self::EventPayload,
                 Self::StatePayload,
-            >,
-        ) {
+            >],
+        ) -> Result<(), Self::Error> {
+            // Pas d'appel à self.apply() pour éviter la récursion mutuelle
+            Ok(())
+        }
+
+        fn query_support_set(
+            &self,
+            _identity: IdentityId,
+        ) -> Result<Vec<Observation<Self::ObservationPayload>>, Self::Error>
+        {
+            Ok(Vec::new())
+        }
+
+        fn out_edges(
+            &self,
+            _source: VertexId,
+        ) -> Result<Vec<Edge>, Self::Error> {
+            Ok(Vec::new())
+        }
+
+        fn all_identities(&self) -> Result<Vec<IdentityId>, Self::Error> {
+            Ok(Vec::new())
         }
     }
 

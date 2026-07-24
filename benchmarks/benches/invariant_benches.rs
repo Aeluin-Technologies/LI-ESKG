@@ -1,6 +1,7 @@
 //! Benchmark suite for invariants.
 
 use std::collections::HashMap;
+use std::convert::Infallible;
 use std::hint::black_box;
 use std::time::Duration;
 
@@ -9,6 +10,7 @@ use li_core::ids::{IdentityId, ObservationId, VertexId};
 use li_core::ontology::Vertex;
 use li_core::relation::Relation;
 use li_core::{Confidence, Modality, Observation, Timestamp};
+use li_model::GraphOperation;
 use li_model::graph::KnowledgeGraph;
 use li_model::invariants::{
     IdentityUniquenessInvariant, Invariant, ObservationPartitionInvariant,
@@ -28,19 +30,39 @@ pub struct MockGraph {
 }
 
 impl KnowledgeGraph for MockGraph {
+    type Error = Infallible;
     type EventPayload = ();
     type ObservationPayload = ();
     type StatePayload = ();
 
-    fn vertex_type(&self, _id: VertexId) -> Option<Vertex> {
-        None
+    fn vertex_type(
+        &self,
+        _id: VertexId,
+    ) -> Result<Option<Vertex>, Self::Error> {
+        Ok(None)
     }
 
-    fn apply(
+    fn apply_batch(
         &mut self,
-        _op: li_model::operations::GraphOperation<(), (), ()>,
-    ) {
-        // Left blank intentionally for benchmarking.
+        _ops: &[GraphOperation<(), (), ()>],
+    ) -> Result<(), Self::Error> {
+        // Volontairement laissé vide pour le benchmarking.
+        Ok(())
+    }
+
+    fn query_support_set(
+        &self,
+        _identity: IdentityId,
+    ) -> Result<Vec<Observation<()>>, Self::Error> {
+        Ok(Vec::new())
+    }
+
+    fn out_edges(&self, _source: VertexId) -> Result<Vec<Edge>, Self::Error> {
+        Ok(Vec::new())
+    }
+
+    fn all_identities(&self) -> Result<Vec<IdentityId>, Self::Error> {
+        Ok(Vec::new())
     }
 }
 
