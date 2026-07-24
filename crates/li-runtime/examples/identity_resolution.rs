@@ -402,14 +402,14 @@ fn generate_html_graph_visualization(
         Vec<&Observation<CameraSnapshotPayload>>,
     > = HashMap::new();
     for (src, rel, tgt, _) in &sink.relations {
-        if *rel == Relation::Supports {
-            if let Some(obs) =
+        if *rel == Relation::Supports &&
+            let Some(obs) =
                 sink.observations.iter().find(|o| o.id.0 == src.0)
-            {
-                identity_obs_map.entry(tgt.0).or_default().push(obs);
-            }
+        {
+            identity_obs_map.entry(tgt.0).or_default().push(obs);
         }
     }
+
     for list in identity_obs_map.values_mut() {
         list.sort_by_key(|o| o.timestamp.0);
     }
@@ -591,7 +591,7 @@ fn generate_html_graph_visualization(
   <script type="text/javascript">
 "#);
 
-    let cctv_images = vec![
+    let cctv_images = [
         "https://i.imgur.com/YiquyQI.jpeg",
         "https://i.imgur.com/C1W26GY.jpeg",
         "https://i.imgur.com/TQpTwzY.jpeg",
