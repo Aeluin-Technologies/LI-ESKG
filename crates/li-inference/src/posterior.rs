@@ -16,5 +16,8 @@ pub struct MarginalPosterior {
 /// Collection of calculated marginal posterior probabilities $P(Z_t)$.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PosteriorDistribution {
+    /// Marginal posterior for each existing candidate identity.
     pub marginals: Vec<MarginalPosterior>,
+    /// Posterior for the paper's $\bot$ state, which creates a new identity.
+    pub new_identity_probability: Probability,
 }

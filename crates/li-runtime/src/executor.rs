@@ -59,10 +59,24 @@ impl<S> OperationExecutor<S> {
     where
         S: ExecutionSink<P, E, St, Error = Err>,
     {
+        self.execute(&operations)
+    }
+
+    /// Executes graph operations borrowed from the caller.
+    ///
+    /// This lets the runtime commit its fixed-size observation transaction
+    /// from stack storage without allocating a temporary operation vector.
+    pub fn execute<P, E, St, Err>(
+        &mut self,
+        operations: &[GraphOperation<P, E, St>],
+    ) -> Result<(), Err>
+    where
+        S: ExecutionSink<P, E, St, Error = Err>,
+    {
         if operations.is_empty() {
             return Ok(());
         }
-        self.sink.execute_batch(&operations)
+        self.sink.execute_batch(operations)
     }
 
     /// Returns an immutable reference to the underlying execution sink.

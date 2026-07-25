@@ -4,6 +4,7 @@
 use alloc::vec::Vec;
 use core::marker::PhantomData;
 
+use li_core::belief::BeliefState;
 use li_core::events::RuntimeEvent;
 use li_core::ids::{IdentityId, VertexId};
 use li_core::observation::{Evidence, Timestamp};
@@ -11,8 +12,10 @@ use li_core::probability::Probability;
 use li_core::relation::Relation;
 use li_factors::compiler::FactorCompiler;
 use li_inference::bp::{BeliefPropagationSolver, BpConfig};
-use li_inference::factor_graph::FactorGraph;
 use li_inference::map::MapEstimator;
+use li_inference::scheduler::{
+    apply_assignment_posterior, run_local_inference,
+};
 use li_model::ontology::IdentityNode;
 use li_model::operations::GraphOperation;
 use li_workspace::workspace::ActiveWorkspace;
@@ -50,7 +53,7 @@ pub struct RuntimeEngine<P, E, S, W, FC, Sink> {
     workspace: W,
     compiler: FC,
     executor: OperationExecutor<Sink>,
-    bp_config: BpConfig,
+    bp_solver: BeliefPropagationSolver,
     next_identity_id: u64,
     is_running: bool,
     _phantom: PhantomData<(E, S)>,
@@ -81,10 +84,10 @@ impl<P, E, S, W, FC, Sink> RuntimeEngine<P, E, S, W, FC, Sink> {
             workspace,
             compiler,
             executor: OperationExecutor::new(sink),
-            bp_config: BpConfig {
+            bp_solver: BeliefPropagationSolver::new(BpConfig {
                 max_iterations: 10,
                 convergence_threshold: 0.001,
-            },
+            }),
             next_identity_id: 1000,
             is_running: true,
             _phantom: PhantomData,
@@ -136,13 +139,13 @@ impl<P, E, S, W, FC, Sink> RuntimeEngine<P, E, S, W, FC, Sink> {
                 self.process_observation(evidence)?;
             },
             DispatchOutcome::MergeIdentities { target, duplicate } => {
-                let ops = Vec::from([GraphOperation::CommitRelation {
+                let ops = [GraphOperation::CommitRelation {
                     source: VertexId(target.0),
                     relation: Relation::Refines,
                     target: VertexId(duplicate.0),
                     created_at: Timestamp(0),
-                }]);
-                self.executor.commit(ops)?;
+                }];
+                self.executor.execute(&ops)?;
             },
             DispatchOutcome::TriggerCheckpoint => {
                 self.workspace.create_snapshot(Timestamp(0));
@@ -173,64 +176,104 @@ impl<P, E, S, W, FC, Sink> RuntimeEngine<P, E, S, W, FC, Sink> {
         P: Clone,
         S: Clone,
     {
-        let mut ops = Vec::new();
         let timestamp = evidence.observation.timestamp;
         let obs_vertex_id = VertexId(evidence.observation.id.0);
 
+        let mut new_identity = None;
         let target_identity = if evidence.candidates.is_empty() {
             let new_id = IdentityId(self.next_identity_id);
             self.next_identity_id += 1;
-            ops.push(GraphOperation::CommitIdentity(IdentityNode {
+            new_identity = Some(IdentityNode {
                 id: new_id,
                 created_at: timestamp,
-            }));
+            });
             new_id
+        } else if evidence.candidates.len() == 1 &&
+            evidence.observation.confidence.0 >=
+                self.config.direct_assignment_threshold
+        {
+            let selected = evidence.candidates[0];
+            if let Some(belief) = self.workspace.get_mut(selected) {
+                belief.posterior =
+                    Probability::new(evidence.observation.confidence.0);
+                belief.last_update = timestamp;
+            }
+            selected
         } else {
-            let active_beliefs_refs = self.workspace.active_beliefs();
-            let active_beliefs: Vec<_> =
-                active_beliefs_refs.into_iter().cloned().collect();
-            let factors =
-                self.compiler.compile_factors(&evidence, &active_beliefs);
-
-            let mut fg = FactorGraph::new();
-            for &cand_id in &evidence.candidates {
-                fg.add_variable(cand_id);
-            }
-            for factor in factors {
-                fg.add_factor(factor, &[]);
-            }
-
-            let solver = BeliefPropagationSolver::new(self.bp_config);
-            let posteriors = solver.solve(&fg);
             let estimator = MapEstimator;
-            let assignment = estimator.estimate_map(
-                &posteriors,
+            let active_beliefs = self.collect_active_beliefs();
+            let inference = run_local_inference(
+                &evidence,
+                &active_beliefs,
+                &self.compiler,
+                &self.bp_solver,
+                &estimator,
                 Probability::new(self.config.decision_threshold),
             );
+            apply_assignment_posterior(
+                &mut self.workspace,
+                &inference.assignment,
+                &inference.posteriors,
+                timestamp,
+            );
 
-            match assignment.selected_identity {
+            match inference.assignment.selected_identity {
                 Some(id) => id,
                 None => {
                     let new_id = IdentityId(self.next_identity_id);
-                    ops.push(GraphOperation::CommitIdentity(IdentityNode {
+                    new_identity = Some(IdentityNode {
                         id: new_id,
                         created_at: timestamp,
-                    }));
+                    });
                     self.next_identity_id += 1;
                     new_id
                 },
             }
         };
 
-        ops.push(GraphOperation::CommitObservation(evidence.observation));
-        ops.push(GraphOperation::CommitRelation {
+        let observation =
+            GraphOperation::CommitObservation(evidence.observation);
+        let relation = GraphOperation::CommitRelation {
             source: obs_vertex_id,
             relation: Relation::Supports,
             target: VertexId(target_identity.0),
             created_at: timestamp,
-        });
+        };
 
-        self.executor.commit(ops)
+        if let Some(identity) = new_identity {
+            let operations = [
+                GraphOperation::CommitIdentity(identity),
+                observation,
+                relation,
+            ];
+            self.executor.execute(&operations)
+        } else {
+            let operations = [observation, relation];
+            self.executor.execute(&operations)
+        }
+    }
+
+    /// Collects belief states for the candidate neighborhood of an
+    /// observation.
+    ///
+    /// # Arguments
+    ///
+    /// * `evidence` - Observation evidence containing candidate identities.
+    ///
+    /// # Returns
+    ///
+    /// Belief states matching the candidate list, preserving only local
+    /// inference context.
+    fn collect_active_beliefs(&self) -> Vec<BeliefState<S>>
+    where
+        W: ActiveWorkspace<Summary = S>,
+        S: Clone,
+    {
+        self.workspace
+            .active_beliefs()
+            .into_iter()
+            .cloned()
+            .collect()
     }
 
     /// Returns a reference to the active workspace.
@@ -262,7 +305,10 @@ impl<P, E, S, W, FC, Sink> RuntimeEngine<P, E, S, W, FC, Sink> {
 #[cfg(test)]
 mod tests {
     use li_core::belief::BeliefState;
+    use li_core::observation::{Modality, Observation};
+    use li_core::probability::Confidence;
     use li_factors::factor::Factor;
+    use li_workspace::InMemoryWorkspace;
     use li_workspace::checkpoint::WorkspaceSnapshot;
 
     use super::*;
@@ -330,6 +376,23 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct RecordingSink {
+        operations: Vec<GraphOperation<(), (), ()>>,
+    }
+
+    impl ExecutionSink<(), (), ()> for RecordingSink {
+        type Error = ();
+
+        fn execute_batch(
+            &mut self,
+            operations: &[GraphOperation<(), (), ()>],
+        ) -> Result<(), Self::Error> {
+            self.operations.extend_from_slice(operations);
+            Ok(())
+        }
+    }
+
     #[test]
     fn test_engine_shutdown() {
         let ws = DummyWorkspace;
@@ -371,5 +434,72 @@ mod tests {
         );
 
         assert_eq!(engine.tick::<()>(), Ok(false));
+    }
+
+    #[test]
+    fn test_engine_direct_assignment_updates_candidate_belief() {
+        let mut workspace = InMemoryWorkspace::<()>::new();
+        workspace.insert(BeliefState {
+            identity: IdentityId(7),
+            summary: (),
+            posterior: Probability::new(0.2),
+            last_update: Timestamp(10),
+        });
+
+        let sink = RecordingSink::default();
+        let mut engine: RuntimeEngine<
+            (),
+            (),
+            (),
+            InMemoryWorkspace<()>,
+            DummyCompiler,
+            RecordingSink,
+        > = RuntimeEngine::new(
+            EngineConfig::default(),
+            4,
+            workspace,
+            DummyCompiler,
+            sink,
+        );
+
+        let evidence = Evidence {
+            observation: Observation {
+                id: li_core::ids::ObservationId(42),
+                modality: Modality(1),
+                timestamp: Timestamp(99),
+                confidence: Confidence(0.99),
+                payload: (),
+            },
+            candidates: alloc::vec![IdentityId(7)],
+        };
+
+        assert_eq!(
+            engine.submit_event(RuntimeEvent::Observation(evidence)),
+            Ok(())
+        );
+        assert_eq!(engine.tick::<()>(), Ok(true));
+
+        let belief_update = engine
+            .workspace()
+            .get(IdentityId(7))
+            .map(|belief| (belief.posterior, belief.last_update));
+        assert_eq!(
+            belief_update,
+            Some((Probability::new(0.99), Timestamp(99)))
+        );
+
+        let operations = &engine.executor().sink().operations;
+        assert_eq!(operations.len(), 2);
+        assert!(matches!(
+            operations[0],
+            GraphOperation::CommitObservation(_)
+        ));
+        assert!(matches!(
+            operations[1],
+            GraphOperation::CommitRelation {
+                target: VertexId(7),
+                ..
+            }
+        ));
     }
 }

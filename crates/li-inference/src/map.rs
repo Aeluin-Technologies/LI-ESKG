@@ -18,8 +18,8 @@ pub struct MapAssignment {
 pub struct MapEstimator;
 
 impl MapEstimator {
-    /// Extracts the candidate identity maximizing the posterior probability
-    /// above a threshold.
+    /// Extracts the MAP existing identity when it beats the new-identity
+    /// assignment and decision threshold.
     ///
     /// # Arguments
     ///
@@ -38,10 +38,12 @@ impl MapEstimator {
         decision_threshold: Probability,
     ) -> MapAssignment {
         let mut best_identity = None;
-        let mut max_prob = decision_threshold;
+        let mut max_prob = posteriors.new_identity_probability;
 
         for marginal in &posteriors.marginals {
-            if marginal.probability.0 > max_prob.0 {
+            if marginal.probability.0 > decision_threshold.0 &&
+                marginal.probability.0 > max_prob.0
+            {
                 max_prob = marginal.probability;
                 best_identity = Some(marginal.identity);
             }
@@ -68,6 +70,7 @@ mod tests {
         let estimator = MapEstimator;
         let posteriors = PosteriorDistribution {
             marginals: Vec::new(),
+            new_identity_probability: Probability::new(1.0),
         };
         let assignment =
             estimator.estimate_map(&posteriors, Probability::new(0.5));
@@ -89,6 +92,7 @@ mod tests {
                     probability: Probability::new(0.4),
                 },
             ],
+            new_identity_probability: Probability::new(0.2),
         };
 
         let assignment =
@@ -110,6 +114,7 @@ mod tests {
                     probability: Probability::new(0.85),
                 },
             ],
+            new_identity_probability: Probability::new(0.1),
         };
 
         let assignment =
@@ -125,6 +130,7 @@ mod tests {
                 identity: IdentityId(1),
                 probability: Probability::new(0.5),
             }],
+            new_identity_probability: Probability::new(0.1),
         };
 
         let assignment =

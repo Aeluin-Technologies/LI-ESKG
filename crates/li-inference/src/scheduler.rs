@@ -3,6 +3,7 @@
 
 use alloc::vec::Vec;
 
+use li_core::belief::BeliefState;
 use li_core::ids::{IdentityId, VertexId};
 use li_core::observation::Evidence;
 use li_core::probability::Probability;
@@ -16,6 +17,90 @@ use li_workspace::workspace::ActiveWorkspace;
 use crate::bp::BeliefPropagationSolver;
 use crate::factor_graph::FactorGraph;
 use crate::map::MapEstimator;
+
+/// Result of local LI-ESKG inference over a candidate neighborhood.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LocalInferenceResult {
+    /// Candidate selected by MAP when its posterior exceeds the threshold.
+    pub assignment: crate::map::MapAssignment,
+    /// Marginal posterior scores computed for candidate identities.
+    pub posteriors: crate::posterior::PosteriorDistribution,
+}
+
+/// Runs the paper's local Psi -> BP -> MAP inference steps for one
+/// observation.
+///
+/// # Arguments
+///
+/// * `evidence` - Incoming observation and pre-filtered candidate identities.
+/// * `active_beliefs` - Belief states in the observation's local neighborhood.
+/// * `compiler` - Domain-specific factor compiler.
+/// * `bp_solver` - Sum-Product Belief Propagation solver.
+/// * `map_estimator` - MAP selector applied to the marginal posterior.
+/// * `decision_threshold` - Minimum posterior required to reuse an identity.
+///
+/// # Returns
+///
+/// A [`LocalInferenceResult`] containing posteriors and the selected identity,
+/// if any.
+pub fn run_local_inference<P, S, C>(
+    evidence: &Evidence<P>,
+    active_beliefs: &[BeliefState<S>],
+    compiler: &C,
+    bp_solver: &BeliefPropagationSolver,
+    map_estimator: &MapEstimator,
+    decision_threshold: Probability,
+) -> LocalInferenceResult
+where
+    C: FactorCompiler<P, S>,
+{
+    let mut factor_graph = FactorGraph::from_candidates(&evidence.candidates);
+
+    let factors = compiler.compile_factors(evidence, active_beliefs);
+    for factor in factors {
+        let _ = factor_graph.add_factor(factor);
+    }
+
+    let posteriors = bp_solver.solve(&factor_graph);
+    let assignment =
+        map_estimator.estimate_map(&posteriors, decision_threshold);
+
+    LocalInferenceResult {
+        assignment,
+        posteriors,
+    }
+}
+
+/// Applies the Gamma update for the identity selected by MAP.
+///
+/// The generic workspace stores only committed belief summaries, so the
+/// runtime reinforces the selected hypothesis instead of performing a costly
+/// writeback across every rejected candidate.
+pub fn apply_assignment_posterior<S, W>(
+    workspace: &mut W,
+    assignment: &crate::map::MapAssignment,
+    posteriors: &crate::posterior::PosteriorDistribution,
+    timestamp: li_core::observation::Timestamp,
+) where
+    W: ActiveWorkspace<Summary = S>,
+{
+    let Some(identity) = assignment.selected_identity else {
+        return;
+    };
+
+    let Some(marginal) = posteriors
+        .marginals
+        .iter()
+        .find(|marginal| marginal.identity == identity)
+    else {
+        return;
+    };
+
+    if let Some(belief) = workspace.get_mut(identity) {
+        belief.posterior = marginal.probability;
+        belief.last_update = timestamp;
+    }
+}
 
 /// Interface defining pipeline schedulers capable of processing empirical
 /// observation evidence.
@@ -117,44 +202,21 @@ where
             }
         }
 
-        let mut factor_graph = FactorGraph::new();
-        let mut var_map = Vec::with_capacity(evidence.candidates.len());
+        let inference = run_local_inference(
+            &evidence,
+            &active_beliefs,
+            compiler,
+            &self.bp_solver,
+            &self.map_estimator,
+            self.decision_threshold,
+        );
 
-        for &candidate_id in &evidence.candidates {
-            let v_idx = factor_graph.add_variable(candidate_id);
-            var_map.push((candidate_id, v_idx));
-        }
-
-        let factors = compiler.compile_factors(&evidence, &active_beliefs);
-        for factor in factors {
-            let scope_ids = factor.scope();
-            let mut scope_indices = Vec::with_capacity(scope_ids.len());
-
-            for &id in scope_ids {
-                if let Some(&(_, v_idx)) =
-                    var_map.iter().find(|(c_id, _)| *c_id == id)
-                {
-                    scope_indices.push(v_idx);
-                }
-            }
-
-            if !scope_indices.is_empty() {
-                factor_graph.add_factor(factor, &scope_indices);
-            }
-        }
-
-        let posteriors = self.bp_solver.solve(&factor_graph);
-
-        let map_assignment = self
-            .map_estimator
-            .estimate_map(&posteriors, self.decision_threshold);
-
-        for marginal in &posteriors.marginals {
-            if let Some(belief) = workspace.get_mut(marginal.identity) {
-                belief.posterior = marginal.probability;
-                belief.last_update = evidence.observation.timestamp;
-            }
-        }
+        apply_assignment_posterior(
+            workspace,
+            &inference.assignment,
+            &inference.posteriors,
+            evidence.observation.timestamp,
+        );
 
         let mut operations = Vec::new();
 
@@ -163,7 +225,7 @@ where
         graph.apply(obs_op.clone());
         operations.push(obs_op);
 
-        let target_identity = match map_assignment.selected_identity {
+        let target_identity = match inference.assignment.selected_identity {
             Some(existing_id) => existing_id,
             None => {
                 let new_identity_id = IdentityId(evidence.observation.id.0);
@@ -481,8 +543,11 @@ mod tests {
             _ => panic!("Op 2 should be CommitRelation"),
         }
 
-        let updated_belief = workspace.get(IdentityId(10)).unwrap();
-        assert_eq!(updated_belief.last_update, Timestamp(3000));
-        assert_eq!(updated_belief.posterior, Probability::new(0.95));
+        let updated_belief = workspace.get(IdentityId(10));
+        assert!(updated_belief.is_some());
+        if let Some(updated_belief) = updated_belief {
+            assert_eq!(updated_belief.last_update, Timestamp(3000));
+            assert!((updated_belief.posterior.0 - 0.95).abs() < f64::EPSILON);
+        }
     }
 }
