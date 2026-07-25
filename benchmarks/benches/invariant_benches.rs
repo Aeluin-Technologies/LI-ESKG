@@ -46,7 +46,6 @@ impl KnowledgeGraph for MockGraph {
         &mut self,
         _ops: &[GraphOperation<(), (), ()>],
     ) -> Result<(), Self::Error> {
-        // Volontairement laissé vide pour le benchmarking.
         Ok(())
     }
 
@@ -163,8 +162,11 @@ fn generate_valid_bench_graph(
 fn bench_observation_partition(c: &mut Criterion) {
     let mut group = c.benchmark_group("Observation Partition Verification");
 
-    group.sample_size(10);
-    group.warm_up_time(Duration::from_secs(1));
+    // Paramètres renforcés : préchauffage de 3s, mesure sur 12s, 20
+    // échantillons
+    group.warm_up_time(Duration::from_secs(3));
+    group.measurement_time(Duration::from_secs(12));
+    group.sample_size(20);
 
     for size in &[100_000, 1_000_000] {
         let num_identities = *size;
@@ -193,8 +195,12 @@ fn bench_observation_partition(c: &mut Criterion) {
 
 fn bench_identity_uniqueness(c: &mut Criterion) {
     let mut group = c.benchmark_group("Identity Uniqueness Verification");
-    group.sample_size(10);
-    group.warm_up_time(Duration::from_secs(1));
+
+    // Paramètres renforcés : préchauffage de 3s, mesure sur 12s, 20
+    // échantillons
+    group.warm_up_time(Duration::from_secs(3));
+    group.measurement_time(Duration::from_secs(12));
+    group.sample_size(20);
 
     for size in &[100_000, 1_000_000] {
         let num_identities = *size;
