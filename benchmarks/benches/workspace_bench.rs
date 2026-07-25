@@ -51,8 +51,6 @@ fn setup_workspace(
 
 fn bench_workspace_insert(c: &mut Criterion) {
     let mut group = c.benchmark_group("InMemoryWorkspace::insert");
-
-    // Plus de temps et d'échantillons pour garantir la stabilité
     group.warm_up_time(Duration::from_secs(3));
     group.measurement_time(Duration::from_secs(15));
     group.sample_size(20);
@@ -67,8 +65,6 @@ fn bench_workspace_insert(c: &mut Criterion) {
             BenchmarkId::new("insert_batch_1000", size),
             &size,
             |b, _| {
-                // Utilisation d'un lot de 1 000 éléments :
-                // On amortit le clone de setup sur 1000 insertions
                 b.iter_batched(
                     || {
                         let mut rng = ChaCha8Rng::seed_from_u64(1337);
@@ -104,9 +100,6 @@ fn bench_workspace_insert(c: &mut Criterion) {
 
 fn bench_workspace_lookup(c: &mut Criterion) {
     let mut group = c.benchmark_group("InMemoryWorkspace::get");
-
-    // Les lookups sont en nanosecondes : 50 échantillons apportent une
-    // excellente métrique
     group.warm_up_time(Duration::from_secs(3));
     group.measurement_time(Duration::from_secs(10));
     group.sample_size(50);
@@ -170,10 +163,6 @@ fn bench_workspace_active_beliefs(c: &mut Criterion) {
 
 fn bench_workspace_eviction(c: &mut Criterion) {
     let mut group = c.benchmark_group("InMemoryWorkspace::evict_expired");
-
-    // L'éviction nécessite une copie fraîche du workspace par échantillon :
-    // On passe à 20s de temps de mesure pour laisser le temps nécessaire sur
-    // 1M d'éléments
     group.warm_up_time(Duration::from_secs(3));
     group.measurement_time(Duration::from_secs(20));
     group.sample_size(15);

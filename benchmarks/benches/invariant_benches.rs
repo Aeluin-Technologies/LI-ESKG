@@ -161,9 +161,6 @@ fn generate_valid_bench_graph(
 
 fn bench_observation_partition(c: &mut Criterion) {
     let mut group = c.benchmark_group("Observation Partition Verification");
-
-    // Paramètres renforcés : préchauffage de 3s, mesure sur 12s, 20
-    // échantillons
     group.warm_up_time(Duration::from_secs(3));
     group.measurement_time(Duration::from_secs(12));
     group.sample_size(20);
@@ -195,9 +192,6 @@ fn bench_observation_partition(c: &mut Criterion) {
 
 fn bench_identity_uniqueness(c: &mut Criterion) {
     let mut group = c.benchmark_group("Identity Uniqueness Verification");
-
-    // Paramètres renforcés : préchauffage de 3s, mesure sur 12s, 20
-    // échantillons
     group.warm_up_time(Duration::from_secs(3));
     group.measurement_time(Duration::from_secs(12));
     group.sample_size(20);

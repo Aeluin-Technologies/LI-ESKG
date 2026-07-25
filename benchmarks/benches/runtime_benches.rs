@@ -258,9 +258,6 @@ fn generate_deterministic_dataset(
 fn bench_pipeline_ingestion(c: &mut Criterion) {
     let mut group =
         c.benchmark_group("RuntimePipeline::IngestionAndResolution");
-
-    // Augmentation du temps de mesure pour absorber le flux complet sur de
-    // grands volumes
     group.warm_up_time(Duration::from_secs(3));
     group.measurement_time(Duration::from_secs(25));
     group.sample_size(15);
@@ -315,8 +312,6 @@ fn bench_pipeline_ingestion(c: &mut Criterion) {
                             let obs_y = obs.payload.y;
                             let obs_timestamp = obs.timestamp;
 
-                            // Passage direct par valeur sans appel à .clone()
-                            // sur l'observation
                             let evidence = Evidence {
                                 observation: obs,
                                 candidates: candidate_ids,
