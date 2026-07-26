@@ -4,8 +4,7 @@
 //! $\phi_i(Z_\phi)$ and factor graph compilation interfaces. It contains no
 //! domain-specific spatial, temporal, or semantic assumptions.
 
-#![no_std]
-#![deny(unsafe_code, missing_docs)]
+#![deny(unsafe_code)]
 
 extern crate alloc;
 
@@ -13,6 +12,6 @@ pub mod compatibility;
 pub mod compiler;
 pub mod factor;
 
-pub use compatibility::*;
-pub use compiler::*;
-pub use factor::*;
+pub use compatibility::PairwiseCompatibility;
+pub use compiler::FactorCompiler;
+pub use factor::{Factor, FactorError, FactorScope, PairwiseFactor};

@@ -677,6 +677,7 @@ name = "li-factors"
 version = "0.1.0"
 dependencies = [
  "li-core",
+ "thiserror",
 ]
 
 [[package]]
@@ -695,7 +696,6 @@ version = "0.1.0"
 dependencies = [
  "dashmap",
  "li-core",
- "libm",
  "petgraph",
  "rayon",
  "serde",
