@@ -1,173 +1,229 @@
-//! Verification of Theorem 3 (Identity Uniqueness).
+//! Verification of Theorem 3 (Identity Uniqueness) with adaptive execution.
 
-use alloc::vec::Vec;
+use std::collections::HashMap;
 
+use li_core::ids::IdentityId;
 use rayon::prelude::*;
 
-use crate::graph::KnowledgeGraph;
-use crate::invariants::Invariant;
+use crate::graph::PetGraphStore;
+use crate::invariants::{Invariant, PARALLEL_EXECUTION_THRESHOLD};
 use crate::queries::{IdentitySetQuery, SupportSetQuery};
 
 /// Asserts that distinct active identity entities map to distinct physical
 /// objects.
-///
-/// This invariant enforces that for any pair of unique identity nodes $i_a,
-/// i_b \in I$ where $i_a \neq i_b$, their historical observation support sets
-/// contain no concurrent measurements originating from the same sensor
-/// modality channel:
-///
-/// $$\forall i_a, i_b \in I, \; i_a \neq i_b \implies \forall o_1 \in
-/// \text{supp}(i_a), \forall o_2 \in \text{supp}(i_b), \; t(o_1) = t(o_2)
-/// \implies m(o_1) \neq m(o_2)$$
 pub struct IdentityUniquenessInvariant;
 
-impl<G> Invariant<G> for IdentityUniquenessInvariant
-where
-    G: KnowledgeGraph + SupportSetQuery + IdentitySetQuery + Sync,
+impl<P: Sync + Send + Clone, E: Sync + Send + Clone, S: Sync + Send + Clone>
+    Invariant<PetGraphStore<P, E, S>> for IdentityUniquenessInvariant
 {
-    /// Evaluates structural identity constraints across active sets in
-    /// parallel.
-    fn verify(&self, graph: &G) -> bool {
-        let active_identities = IdentitySetQuery::all_identities(graph);
-        let local_footprints: Option<Vec<Vec<_>>> = active_identities
-            .into_par_iter()
-            .map(|id| {
-                let support = SupportSetQuery::query_support_set(graph, id);
-                let mut footprints = Vec::with_capacity(support.len());
+    fn verify(&self, store: &PetGraphStore<P, E, S>) -> bool {
+        let active_identities = IdentitySetQuery::all_identities(store);
+        let total_nodes = store.raw_graph.node_count();
 
-                for obs in support {
-                    footprints.push(((obs.timestamp, obs.modality), id));
-                }
+        let extract_footprints = |id: IdentityId| -> Vec<_> {
+            let support = SupportSetQuery::query_support_set(store, id);
+            support
+                .into_iter()
+                .map(|obs| ((obs.timestamp, obs.modality), id))
+                .collect()
+        };
 
-                Some(footprints)
-            })
-            .collect();
+        let is_parallel = total_nodes >= PARALLEL_EXECUTION_THRESHOLD;
 
-        let footprints_lists: Vec<Vec<_>> = match local_footprints {
-            Some(lists) => lists,
-            None => return false,
+        let footprints_lists: Vec<Vec<_>> = if is_parallel {
+            active_identities
+                .into_par_iter()
+                .map(extract_footprints)
+                .collect()
+        } else {
+            active_identities
+                .into_iter()
+                .map(extract_footprints)
+                .collect()
         };
 
         let mut all_footprints: Vec<_> =
             footprints_lists.into_iter().flatten().collect();
-        all_footprints.par_sort_unstable_by_key(|(fp, _)| *fp);
 
-        let has_conflict = all_footprints.par_windows(2).any(|w| {
-            let (fp1, id1) = &w[0];
-            let (fp2, id2) = &w[1];
-
-            fp1 == fp2 && id1 != id2
-        });
-
-        !has_conflict
+        if is_parallel {
+            all_footprints.par_sort_unstable_by_key(|(fp, _)| *fp);
+            let has_conflict = all_footprints.par_windows(2).any(|w| {
+                let (fp1, id1) = &w[0];
+                let (fp2, id2) = &w[1];
+                fp1 == fp2 && id1 != id2
+            });
+            !has_conflict
+        } else {
+            let mut seen = HashMap::with_capacity(all_footprints.len());
+            !all_footprints.into_iter().any(|(fp, id)| {
+                if let Some(existing_id) = seen.insert(fp, id) {
+                    existing_id != id
+                } else {
+                    false
+                }
+            })
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use alloc::vec;
-    use alloc::vec::Vec;
-
-    use li_core::ids::{IdentityId, ObservationId, VertexId};
+    use li_core::ids::{IdentityId, ObservationId};
     use li_core::observation::{Modality, Observation, Timestamp};
+    use li_core::ontology::Vertex;
     use li_core::probability::Confidence;
     use li_core::relation::Relation;
 
     use super::*;
-    use crate::memory::MemoryGraph;
-    use crate::ontology::IdentityNode;
+    use crate::graph::KnowledgeGraph;
     use crate::operations::GraphOperation;
 
-    fn create_mock_observation(
-        id: u64,
-        time: i64,
-        modality: u32,
-    ) -> Observation<()> {
-        Observation {
-            id: ObservationId(id),
-            modality: Modality(modality),
-            timestamp: Timestamp::from_micros(time),
-            confidence: Confidence::new(0.7),
-            payload: (),
-        }
-    }
+    #[test]
+    fn test_uniqueness_no_conflicts_valid() {
+        let mut store = PetGraphStore::<(), (), ()>::new();
+        let obs1 = Observation::new(
+            ObservationId(1),
+            Modality(1),
+            Timestamp::from_secs(100),
+            Confidence::new(1.0),
+            (),
+        );
+        let obs2 = Observation::new(
+            ObservationId(2),
+            Modality(1),
+            Timestamp::from_secs(200),
+            Confidence::new(1.0),
+            (),
+        );
 
-    fn build_graph(
-        identities: Vec<(IdentityId, Vec<Observation<()>>)>,
-    ) -> MemoryGraph<(), (), ()> {
-        let mut graph = MemoryGraph::new();
-        for (id, obs_list) in identities {
-            graph.apply(GraphOperation::CommitIdentity(IdentityNode {
-                id,
-                created_at: Timestamp::default(),
-            }));
-            for obs in obs_list {
-                let obs_vid = VertexId(obs.id.0);
-                graph.apply(GraphOperation::CommitObservation(obs));
-                graph.apply(GraphOperation::CommitRelation {
-                    source: obs_vid,
-                    relation: Relation::Supports,
-                    target: VertexId(id.0),
-                    created_at: Timestamp::default(),
-                });
-            }
-        }
-        graph
+        let ops = vec![
+            GraphOperation::CommitObservation(obs1),
+            GraphOperation::CommitObservation(obs2),
+            GraphOperation::CommitIdentity {
+                id: IdentityId(1),
+                created_at: Timestamp::from_secs(100),
+            },
+            GraphOperation::CommitIdentity {
+                id: IdentityId(2),
+                created_at: Timestamp::from_secs(200),
+            },
+            GraphOperation::CommitRelation {
+                source: Vertex::Observation(ObservationId(1)),
+                relation: Relation::Supports,
+                target: Vertex::Identity(IdentityId(1)),
+                created_at: Timestamp::from_secs(101),
+            },
+            GraphOperation::CommitRelation {
+                source: Vertex::Observation(ObservationId(2)),
+                relation: Relation::Supports,
+                target: Vertex::Identity(IdentityId(2)),
+                created_at: Timestamp::from_secs(201),
+            },
+        ];
+        assert!(store.apply_batch(ops).is_ok());
+
+        let invariant = IdentityUniquenessInvariant;
+        assert!(invariant.verify(&store));
     }
 
     #[test]
-    fn test_empty_graph_passes() {
-        let graph = build_graph(Vec::new());
-        assert!(IdentityUniquenessInvariant.verify(&graph));
+    fn test_uniqueness_spatiotemporal_footprint_conflict() {
+        let mut store = PetGraphStore::<(), (), ()>::new();
+        let shared_time = Timestamp::from_secs(100);
+        let shared_modality = Modality(5);
+
+        let obs1 = Observation::new(
+            ObservationId(1),
+            shared_modality,
+            shared_time,
+            Confidence::new(0.9),
+            (),
+        );
+        let obs2 = Observation::new(
+            ObservationId(2),
+            shared_modality,
+            shared_time,
+            Confidence::new(0.95),
+            (),
+        );
+
+        let ops = vec![
+            GraphOperation::CommitObservation(obs1),
+            GraphOperation::CommitObservation(obs2),
+            GraphOperation::CommitIdentity {
+                id: IdentityId(10),
+                created_at: Timestamp::from_secs(100),
+            },
+            GraphOperation::CommitIdentity {
+                id: IdentityId(20),
+                created_at: Timestamp::from_secs(100),
+            },
+            GraphOperation::CommitRelation {
+                source: Vertex::Observation(ObservationId(1)),
+                relation: Relation::Supports,
+                target: Vertex::Identity(IdentityId(10)),
+                created_at: Timestamp::from_secs(101),
+            },
+            GraphOperation::CommitRelation {
+                source: Vertex::Observation(ObservationId(2)),
+                relation: Relation::Supports,
+                target: Vertex::Identity(IdentityId(20)),
+                created_at: Timestamp::from_secs(101),
+            },
+        ];
+        assert!(store.apply_batch(ops).is_ok());
+
+        let invariant = IdentityUniquenessInvariant;
+        assert!(!invariant.verify(&store));
     }
 
     #[test]
-    fn test_single_identity_passes() {
-        let id = IdentityId(1);
-        let obs = create_mock_observation(10, 1710000000, 1);
-        let graph = build_graph(vec![(id, vec![obs])]);
-        assert!(IdentityUniquenessInvariant.verify(&graph));
-    }
+    fn test_uniqueness_same_timestamp_different_modality_valid() {
+        let mut store = PetGraphStore::<(), (), ()>::new();
+        let shared_time = Timestamp::from_secs(100);
 
-    #[test]
-    fn test_same_time_different_modality_passes() {
-        let id_a = IdentityId(1);
-        let id_b = IdentityId(2);
-        let obs_a = create_mock_observation(10, 1710000000, 1);
-        let obs_b = create_mock_observation(11, 1710000000, 2);
-        let graph =
-            build_graph(vec![(id_a, vec![obs_a]), (id_b, vec![obs_b])]);
-        assert!(IdentityUniquenessInvariant.verify(&graph));
-    }
+        let obs1 = Observation::new(
+            ObservationId(1),
+            Modality(1),
+            shared_time,
+            Confidence::new(1.0),
+            (),
+        );
+        let obs2 = Observation::new(
+            ObservationId(2),
+            Modality(2),
+            shared_time,
+            Confidence::new(1.0),
+            (),
+        );
 
-    #[test]
-    fn test_same_modality_different_time_passes() {
-        let id_a = IdentityId(1);
-        let id_b = IdentityId(2);
-        let obs_a = create_mock_observation(10, 1710000000, 1);
-        let obs_b = create_mock_observation(11, 171005000, 1);
-        let graph =
-            build_graph(vec![(id_a, vec![obs_a]), (id_b, vec![obs_b])]);
-        assert!(IdentityUniquenessInvariant.verify(&graph));
-    }
+        let ops = vec![
+            GraphOperation::CommitObservation(obs1),
+            GraphOperation::CommitObservation(obs2),
+            GraphOperation::CommitIdentity {
+                id: IdentityId(1),
+                created_at: Timestamp::from_secs(100),
+            },
+            GraphOperation::CommitIdentity {
+                id: IdentityId(2),
+                created_at: Timestamp::from_secs(100),
+            },
+            GraphOperation::CommitRelation {
+                source: Vertex::Observation(ObservationId(1)),
+                relation: Relation::Supports,
+                target: Vertex::Identity(IdentityId(1)),
+                created_at: Timestamp::from_secs(101),
+            },
+            GraphOperation::CommitRelation {
+                source: Vertex::Observation(ObservationId(2)),
+                relation: Relation::Supports,
+                target: Vertex::Identity(IdentityId(2)),
+                created_at: Timestamp::from_secs(101),
+            },
+        ];
+        assert!(store.apply_batch(ops).is_ok());
 
-    #[test]
-    fn test_direct_spatiotemporal_collision_fails() {
-        let id_a = IdentityId(1);
-        let id_b = IdentityId(2);
-        let obs_a = create_mock_observation(10, 1710000000, 1);
-        let obs_b = create_mock_observation(11, 1710000000, 1);
-        let graph =
-            build_graph(vec![(id_a, vec![obs_a]), (id_b, vec![obs_b])]);
-        assert!(!IdentityUniquenessInvariant.verify(&graph));
-    }
-
-    #[test]
-    fn test_self_duplicate_observation_footprint_passes() {
-        let id = IdentityId(1);
-        let obs_a = create_mock_observation(10, 1710000000, 1);
-        let obs_b = create_mock_observation(10, 1710000000, 1);
-        let graph = build_graph(vec![(id, vec![obs_a, obs_b])]);
-        assert!(IdentityUniquenessInvariant.verify(&graph));
+        let invariant = IdentityUniquenessInvariant;
+        assert!(invariant.verify(&store));
     }
 }

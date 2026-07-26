@@ -5,5 +5,16 @@ edition = "2024"
 
 [dependencies]
 li-core = { path = "../li-core", version = "0.1.0" }
-rayon = "1"
-serde = { version = "1", features = ["derive", "alloc"] }
+petgraph = { version = "0.8.3", features = ["rayon"] }
+rayon = { version = "1", optional = true }
+dashmap = { version = "6.2", features = ["inline", "rayon", "serde"] }
+serde = { version = "1", features = ["alloc", "derive"] }
+libm = "0.2"
+thiserror = "2"
+
+[features]
+default = ["std"]
+std = [
+    "serde/std",
+    "rayon",
+]

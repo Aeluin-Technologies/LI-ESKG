@@ -402,7 +402,8 @@ mod tests {
         workspace.insert(mock_belief(1, 1000));
         workspace.insert(mock_belief(2, 1000));
 
-        // Elapsed time is 50 ms (50_000 us). TTL threshold set to 100 ms (100_000 us).
+        // Elapsed time is 50 ms (50_000 us). TTL threshold set to 100 ms
+        // (100_000 us).
         let evicted =
             workspace.evict_expired(Timestamp::from_millis(1050), 100_000);
 
@@ -416,7 +417,8 @@ mod tests {
         workspace.insert(mock_belief(1, 100));
         workspace.insert(mock_belief(2, 200));
 
-        // Elapsed times are 900 ms and 800 ms. TTL threshold set to 100 ms (100_000 us).
+        // Elapsed times are 900 ms and 800 ms. TTL threshold set to 100 ms
+        // (100_000 us).
         let evicted =
             workspace.evict_expired(Timestamp::from_millis(1000), 100_000);
 

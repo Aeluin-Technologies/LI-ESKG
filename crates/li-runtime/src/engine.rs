@@ -5,15 +5,15 @@ use alloc::vec::Vec;
 use core::marker::PhantomData;
 
 use li_core::events::RuntimeEvent;
-use li_core::ids::{IdentityId, VertexId};
+use li_core::ids::IdentityId;
 use li_core::observation::{Evidence, Timestamp};
+use li_core::ontology::Vertex;
 use li_core::probability::Probability;
 use li_core::relation::Relation;
 use li_factors::compiler::FactorCompiler;
 use li_inference::bp::{BeliefPropagationSolver, BpConfig};
 use li_inference::factor_graph::FactorGraph;
 use li_inference::map::MapEstimator;
-use li_model::ontology::IdentityNode;
 use li_model::operations::GraphOperation;
 use li_workspace::workspace::ActiveWorkspace;
 
@@ -137,9 +137,9 @@ impl<P, E, S, W, FC, Sink> RuntimeEngine<P, E, S, W, FC, Sink> {
             },
             DispatchOutcome::MergeIdentities { target, duplicate } => {
                 let ops = Vec::from([GraphOperation::CommitRelation {
-                    source: VertexId(target.0),
+                    source: Vertex::Identity(target),
                     relation: Relation::Refines,
-                    target: VertexId(duplicate.0),
+                    target: Vertex::Identity(duplicate),
                     created_at: Timestamp::default(),
                 }]);
                 self.executor.commit(ops)?;
@@ -175,15 +175,15 @@ impl<P, E, S, W, FC, Sink> RuntimeEngine<P, E, S, W, FC, Sink> {
     {
         let mut ops = Vec::new();
         let timestamp = evidence.observation.timestamp;
-        let obs_vertex_id = VertexId(evidence.observation.id.0);
+        let obs_id = evidence.observation.id;
 
         let target_identity = if evidence.candidates.is_empty() {
             let new_id = IdentityId(self.next_identity_id);
             self.next_identity_id += 1;
-            ops.push(GraphOperation::CommitIdentity(IdentityNode {
+            ops.push(GraphOperation::CommitIdentity {
                 id: new_id,
                 created_at: timestamp,
-            }));
+            });
             new_id
         } else {
             let active_beliefs_refs = self.workspace.active_beliefs();
@@ -212,10 +212,10 @@ impl<P, E, S, W, FC, Sink> RuntimeEngine<P, E, S, W, FC, Sink> {
                 Some(id) => id,
                 None => {
                     let new_id = IdentityId(self.next_identity_id);
-                    ops.push(GraphOperation::CommitIdentity(IdentityNode {
+                    ops.push(GraphOperation::CommitIdentity {
                         id: new_id,
                         created_at: timestamp,
-                    }));
+                    });
                     self.next_identity_id += 1;
                     new_id
                 },
@@ -224,9 +224,9 @@ impl<P, E, S, W, FC, Sink> RuntimeEngine<P, E, S, W, FC, Sink> {
 
         ops.push(GraphOperation::CommitObservation(evidence.observation));
         ops.push(GraphOperation::CommitRelation {
-            source: obs_vertex_id,
+            source: Vertex::Observation(obs_id),
             relation: Relation::Supports,
-            target: VertexId(target_identity.0),
+            target: Vertex::Identity(target_identity),
             created_at: timestamp,
         });
 

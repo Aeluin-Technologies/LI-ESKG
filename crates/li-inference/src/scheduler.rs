@@ -3,13 +3,13 @@
 
 use alloc::vec::Vec;
 
-use li_core::ids::{IdentityId, VertexId};
+use li_core::ids::IdentityId;
 use li_core::observation::Evidence;
+use li_core::ontology::Vertex;
 use li_core::probability::Probability;
 use li_core::relation::Relation;
 use li_factors::compiler::FactorCompiler;
 use li_model::graph::KnowledgeGraph;
-use li_model::ontology::IdentityNode;
 use li_model::operations::GraphOperation;
 use li_workspace::workspace::ActiveWorkspace;
 
@@ -105,7 +105,7 @@ where
         let mut active_beliefs = Vec::with_capacity(evidence.candidates.len());
         for &candidate_id in &evidence.candidates {
             let vertex_exists = matches!(
-                graph.vertex_type(VertexId(candidate_id.0)),
+                graph.vertex_type(Vertex::Identity(candidate_id)),
                 Ok(Some(_))
             );
 
@@ -160,20 +160,16 @@ where
 
         let obs_op =
             GraphOperation::CommitObservation(evidence.observation.clone());
-        graph.apply(obs_op.clone());
         operations.push(obs_op);
 
         let target_identity = match map_assignment.selected_identity {
             Some(existing_id) => existing_id,
             None => {
                 let new_identity_id = IdentityId(evidence.observation.id.0);
-                let identity_node = IdentityNode {
+                let id_op = GraphOperation::CommitIdentity {
                     id: new_identity_id,
                     created_at: evidence.observation.timestamp,
                 };
-
-                let id_op = GraphOperation::CommitIdentity(identity_node);
-                graph.apply(id_op.clone());
                 operations.push(id_op);
 
                 new_identity_id
@@ -181,13 +177,14 @@ where
         };
 
         let rel_op = GraphOperation::CommitRelation {
-            source: VertexId(evidence.observation.id.0),
+            source: Vertex::Observation(evidence.observation.id),
             relation: Relation::Supports,
-            target: VertexId(target_identity.0),
+            target: Vertex::Identity(target_identity),
             created_at: evidence.observation.timestamp,
         };
-        graph.apply(rel_op.clone());
         operations.push(rel_op);
+
+        let _ = graph.apply_batch(operations.clone());
 
         operations
     }
@@ -200,14 +197,13 @@ mod tests {
     use core::convert::Infallible;
 
     use li_core::belief::BeliefState;
-    use li_core::ids::{IdentityId, ObservationId, VertexId};
+    use li_core::ids::{IdentityId, ObservationId};
     use li_core::observation::{Evidence, Modality, Observation, Timestamp};
     use li_core::ontology::Vertex;
     use li_core::probability::{Confidence, Probability};
     use li_core::relation::Relation;
     use li_factors::compiler::FactorCompiler;
     use li_factors::factor::{Factor, FactorScope};
-    use li_model::Edge;
     use li_model::graph::KnowledgeGraph;
     use li_model::operations::GraphOperation;
     use li_workspace::InMemoryWorkspace;
@@ -223,7 +219,7 @@ mod tests {
     struct MockSummary;
 
     struct MockGraph {
-        vertices: Vec<VertexId>,
+        vertices: Vec<IdentityId>,
     }
 
     impl KnowledgeGraph for MockGraph {
@@ -234,24 +230,26 @@ mod tests {
 
         fn vertex_type(
             &self,
-            id: VertexId,
+            vertex: Vertex,
         ) -> Result<Option<Vertex>, Self::Error> {
-            if self.vertices.contains(&id) {
-                Ok(Some(Vertex::Identity(IdentityId(id.0))))
-            } else {
-                Ok(None)
+            match vertex {
+                Vertex::Identity(id) if self.vertices.contains(&id) => {
+                    Ok(Some(Vertex::Identity(id)))
+                },
+                _ => Ok(None),
             }
         }
 
         fn apply_batch(
             &mut self,
-            _ops: &[GraphOperation<
-                Self::ObservationPayload,
-                Self::EventPayload,
-                Self::StatePayload,
-            >],
+            _ops: impl IntoIterator<
+                Item = GraphOperation<
+                    Self::ObservationPayload,
+                    Self::EventPayload,
+                    Self::StatePayload,
+                >,
+            >,
         ) -> Result<(), Self::Error> {
-            // Pas d'appel à self.apply() pour éviter la récursion mutuelle
             Ok(())
         }
 
@@ -260,13 +258,6 @@ mod tests {
             _identity: IdentityId,
         ) -> Result<Vec<Observation<Self::ObservationPayload>>, Self::Error>
         {
-            Ok(Vec::new())
-        }
-
-        fn out_edges(
-            &self,
-            _source: VertexId,
-        ) -> Result<Vec<Edge>, Self::Error> {
             Ok(Vec::new())
         }
 
@@ -362,8 +353,8 @@ mod tests {
 
         assert_eq!(ops.len(), 3);
         match &ops[1] {
-            GraphOperation::CommitIdentity(node) => {
-                assert_eq!(node.id, IdentityId(50));
+            GraphOperation::CommitIdentity { id, .. } => {
+                assert_eq!(*id, IdentityId(50));
             },
             _ => panic!("Expected CommitIdentity operation"),
         }
@@ -379,7 +370,7 @@ mod tests {
             OperationalPipeline::new(bp_solver, Probability::new(0.8));
 
         let mut graph = MockGraph {
-            vertices: alloc::vec![VertexId(10)],
+            vertices: alloc::vec![IdentityId(10)],
         };
         let mut workspace = InMemoryWorkspace::<MockSummary>::new();
         workspace.insert(BeliefState {
@@ -411,8 +402,8 @@ mod tests {
 
         assert_eq!(ops.len(), 3);
         match &ops[1] {
-            GraphOperation::CommitIdentity(node) => {
-                assert_eq!(node.id, IdentityId(99));
+            GraphOperation::CommitIdentity { id, .. } => {
+                assert_eq!(*id, IdentityId(99));
             },
             _ => panic!("Expected CommitIdentity creation"),
         }
@@ -428,7 +419,7 @@ mod tests {
             OperationalPipeline::new(bp_solver, Probability::new(0.5));
 
         let mut graph = MockGraph {
-            vertices: alloc::vec![VertexId(10)],
+            vertices: alloc::vec![IdentityId(10)],
         };
         let mut workspace = InMemoryWorkspace::<MockSummary>::new();
         workspace.insert(BeliefState {
@@ -474,11 +465,11 @@ mod tests {
                 target,
                 ..
             } => {
-                assert_eq!(*source, VertexId(200));
+                assert_eq!(*source, Vertex::Observation(ObservationId(200)));
                 assert_eq!(*relation, Relation::Supports);
-                assert_eq!(*target, VertexId(10));
+                assert_eq!(*target, Vertex::Identity(IdentityId(10)));
             },
-            _ => panic!("Op 2 should be CommitRelation"),
+            _ => panic!("Op 1 should be CommitRelation"),
         }
 
         let updated_belief = workspace.get(IdentityId(10)).unwrap();

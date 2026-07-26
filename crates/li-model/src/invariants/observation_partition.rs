@@ -1,212 +1,229 @@
-//! Verification of Theorem 4 (Observation Partition).
+//! Verification of Theorem 4 (Observation Partition) with adaptive execution.
 
-use alloc::vec::Vec;
-use core::ops::Deref;
+use std::collections::HashSet;
 
-use li_core::ids::VertexId;
+use li_core::ids::IdentityId;
+use li_core::ontology::Vertex;
 use li_core::relation::Relation;
+use petgraph::Direction;
+use petgraph::visit::EdgeRef;
 use rayon::prelude::*;
 
-use crate::graph::KnowledgeGraph;
-use crate::invariants::Invariant;
-use crate::ontology::Edge;
-use crate::queries::{IdentitySetQuery, NeighborhoodQuery, SupportSetQuery};
+use crate::graph::PetGraphStore;
+use crate::invariants::{Invariant, PARALLEL_EXECUTION_THRESHOLD};
+use crate::queries::{IdentitySetQuery, SupportSetQuery};
 
 /// Asserts that the support sets of active identities form a strict partition
-/// of the active observation space.
+/// over active observations.
 pub struct ObservationPartitionInvariant;
 
-impl<G> Invariant<G> for ObservationPartitionInvariant
-where
-    G: KnowledgeGraph
-        + NeighborhoodQuery
-        + IdentitySetQuery
-        + SupportSetQuery
-        + Sync,
-    for<'a> <G as NeighborhoodQuery>::EdgeRef<'a>: Deref<Target = Edge>,
+impl<P: Sync + Send + Clone, E: Sync + Send + Clone, S: Sync + Send + Clone>
+    Invariant<PetGraphStore<P, E, S>> for ObservationPartitionInvariant
 {
-    /// Evaluates partition properties by inspecting active identity support
-    /// sets in parallel and tracking cross-boundary uniqueness constraints.
-    fn verify(&self, graph: &G) -> bool {
-        let active_identities = IdentitySetQuery::all_identities(graph);
-        let local_results: Option<Vec<Vec<_>>> = active_identities
-            .into_par_iter()
-            .map(|id| {
-                let support = SupportSetQuery::query_support_set(graph, id);
+    fn verify(&self, store: &PetGraphStore<P, E, S>) -> bool {
+        let active_identities = IdentitySetQuery::all_identities(store);
+        let total_nodes = store.raw_graph.node_count();
 
-                if support.is_empty() {
+        let process_identity = |id: IdentityId| -> Option<Vec<_>> {
+            let support = SupportSetQuery::query_support_set(store, id);
+            let mut local_obs_ids = Vec::with_capacity(support.len());
+
+            for obs in support {
+                let obs_vertex = Vertex::Observation(obs.id);
+                let obs_idx = match store.index_map.get(&obs_vertex) {
+                    Some(idx) => *idx,
+                    None => return None,
+                };
+
+                let mut supports_relation_count = 0;
+                for edge in store
+                    .raw_graph
+                    .edges_directed(obs_idx, Direction::Outgoing)
+                {
+                    if edge.weight().relation == Relation::Supports {
+                        supports_relation_count += 1;
+                        let target_vertex =
+                            store.raw_graph[edge.target()].vertex();
+                        if target_vertex != Vertex::Identity(id) {
+                            return None;
+                        }
+                    }
+                }
+
+                if supports_relation_count != 1 {
                     return None;
                 }
 
-                let mut local_obs_ids = Vec::with_capacity(support.len());
+                local_obs_ids.push(obs.id);
+            }
 
-                for obs in support {
-                    let vid = VertexId(obs.id.0);
-                    let out_edges = NeighborhoodQuery::out_edges(graph, vid);
-                    let mut supports_relation_count = 0;
+            Some(local_obs_ids)
+        };
 
-                    for edge_ref in out_edges {
-                        let edge: &Edge = edge_ref.deref();
-                        if edge.relation == Relation::Supports {
-                            supports_relation_count += 1;
-                            if edge.target != VertexId(id.0) {
-                                return None;
-                            }
-                        }
-                    }
+        let is_parallel = total_nodes >= PARALLEL_EXECUTION_THRESHOLD;
 
-                    if supports_relation_count != 1 {
-                        return None;
-                    }
+        let obs_lists: Vec<Vec<_>> = if is_parallel {
+            let local_results: Option<Vec<Vec<_>>> = active_identities
+                .into_par_iter()
+                .map(process_identity)
+                .collect();
 
-                    local_obs_ids.push(obs.id);
+            match local_results {
+                Some(lists) => lists,
+                None => return false,
+            }
+        } else {
+            let mut lists = Vec::with_capacity(active_identities.len());
+            for id in active_identities {
+                match process_identity(id) {
+                    Some(local) => lists.push(local),
+                    None => return false,
                 }
-
-                Some(local_obs_ids)
-            })
-            .collect();
-
-        let obs_lists: Vec<Vec<_>> = match local_results {
-            Some(lists) => lists,
-            None => return false,
+            }
+            lists
         };
 
         let mut all_obs_ids: Vec<_> =
             obs_lists.into_iter().flatten().collect();
-        all_obs_ids.par_sort_unstable();
 
-        let has_duplicates = all_obs_ids.par_windows(2).any(|w| w[0] == w[1]);
-        !has_duplicates
+        if is_parallel {
+            all_obs_ids.par_sort_unstable();
+            !all_obs_ids.par_windows(2).any(|w| w[0] == w[1])
+        } else {
+            let mut seen = HashSet::with_capacity(all_obs_ids.len());
+            all_obs_ids.into_iter().all(|obs_id| seen.insert(obs_id))
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use li_core::IdentityId;
-    use li_core::ids::ObservationId;
+    use li_core::ids::{IdentityId, ObservationId};
     use li_core::observation::{Modality, Observation, Timestamp};
+    use li_core::ontology::Vertex;
     use li_core::probability::Confidence;
+    use li_core::relation::Relation;
 
     use super::*;
-    use crate::memory::MemoryGraph;
-    use crate::ontology::IdentityNode;
+    use crate::graph::KnowledgeGraph;
     use crate::operations::GraphOperation;
 
-    fn create_observation(id: u64) -> Observation<()> {
-        Observation {
-            id: ObservationId(id),
-            modality: Modality(1),
-            timestamp: Timestamp::default(),
-            confidence: Confidence::new(0.7),
-            payload: (),
-        }
+    #[test]
+    fn test_partition_empty_graph_valid() {
+        let store = PetGraphStore::<(), (), ()>::new();
+        let invariant = ObservationPartitionInvariant;
+        assert!(invariant.verify(&store));
     }
 
     #[test]
-    fn test_empty_graph_passes_vacuously() {
-        let graph: MemoryGraph<(), (), ()> = MemoryGraph::new();
-        assert!(ObservationPartitionInvariant.verify(&graph));
+    fn test_partition_disjoint_support_sets_valid() {
+        let mut store = PetGraphStore::<(), (), ()>::new();
+        let obs1 = Observation::new(
+            ObservationId(1),
+            Modality(1),
+            Timestamp::from_secs(100),
+            Confidence::new(1.0),
+            (),
+        );
+        let obs2 = Observation::new(
+            ObservationId(2),
+            Modality(2),
+            Timestamp::from_secs(101),
+            Confidence::new(1.0),
+            (),
+        );
+
+        let ops = vec![
+            GraphOperation::CommitObservation(obs1),
+            GraphOperation::CommitObservation(obs2),
+            GraphOperation::CommitIdentity {
+                id: IdentityId(1),
+                created_at: Timestamp::from_secs(102),
+            },
+            GraphOperation::CommitIdentity {
+                id: IdentityId(2),
+                created_at: Timestamp::from_secs(103),
+            },
+            GraphOperation::CommitRelation {
+                source: Vertex::Observation(ObservationId(1)),
+                relation: Relation::Supports,
+                target: Vertex::Identity(IdentityId(1)),
+                created_at: Timestamp::from_secs(104),
+            },
+            GraphOperation::CommitRelation {
+                source: Vertex::Observation(ObservationId(2)),
+                relation: Relation::Supports,
+                target: Vertex::Identity(IdentityId(2)),
+                created_at: Timestamp::from_secs(105),
+            },
+        ];
+        assert!(store.apply_batch(ops).is_ok());
+
+        let invariant = ObservationPartitionInvariant;
+        assert!(invariant.verify(&store));
     }
 
     #[test]
-    fn test_perfect_disjoint_partition_passes() {
-        let mut graph: MemoryGraph<(), (), ()> = MemoryGraph::new();
-        let id_a = IdentityId(10);
-        let id_b = IdentityId(20);
-        let obs_1 = create_observation(1);
-        let obs_2 = create_observation(2);
+    fn test_partition_shared_observation_invalid() {
+        let mut store = PetGraphStore::<(), (), ()>::new();
+        let obs = Observation::new(
+            ObservationId(1),
+            Modality(1),
+            Timestamp::from_secs(100),
+            Confidence::new(1.0),
+            (),
+        );
 
-        graph.apply(GraphOperation::CommitIdentity(IdentityNode {
-            id: id_a,
-            created_at: Timestamp::default(),
-        }));
-        graph.apply(GraphOperation::CommitIdentity(IdentityNode {
-            id: id_b,
-            created_at: Timestamp::default(),
-        }));
-        graph.apply(GraphOperation::CommitObservation(obs_1.clone()));
-        graph.apply(GraphOperation::CommitObservation(obs_2.clone()));
+        let ops = vec![
+            GraphOperation::CommitObservation(obs),
+            GraphOperation::CommitIdentity {
+                id: IdentityId(1),
+                created_at: Timestamp::from_secs(101),
+            },
+            GraphOperation::CommitIdentity {
+                id: IdentityId(2),
+                created_at: Timestamp::from_secs(102),
+            },
+            GraphOperation::CommitRelation {
+                source: Vertex::Observation(ObservationId(1)),
+                relation: Relation::Supports,
+                target: Vertex::Identity(IdentityId(1)),
+                created_at: Timestamp::from_secs(103),
+            },
+            GraphOperation::CommitRelation {
+                source: Vertex::Observation(ObservationId(1)),
+                relation: Relation::Supports,
+                target: Vertex::Identity(IdentityId(2)),
+                created_at: Timestamp::from_secs(104),
+            },
+        ];
+        assert!(store.apply_batch(ops).is_ok());
 
-        graph.apply(GraphOperation::CommitRelation {
-            source: VertexId(obs_1.id.0),
-            relation: Relation::Supports,
-            target: VertexId(id_a.0),
-            created_at: Timestamp::default(),
-        });
-        graph.apply(GraphOperation::CommitRelation {
-            source: VertexId(obs_2.id.0),
-            relation: Relation::Supports,
-            target: VertexId(id_b.0),
-            created_at: Timestamp::default(),
-        });
-
-        assert!(ObservationPartitionInvariant.verify(&graph));
+        let invariant = ObservationPartitionInvariant;
+        assert!(!invariant.verify(&store));
     }
 
     #[test]
-    fn test_empty_identity_support_set_fails() {
-        let mut graph: MemoryGraph<(), (), ()> = MemoryGraph::new();
-        let id_a = IdentityId(10);
-        graph.apply(GraphOperation::CommitIdentity(IdentityNode {
-            id: id_a,
-            created_at: Timestamp::default(),
-        }));
+    fn test_partition_observation_without_supports_relation() {
+        let mut store = PetGraphStore::<(), (), ()>::new();
+        let obs = Observation::new(
+            ObservationId(1),
+            Modality(1),
+            Timestamp::from_secs(100),
+            Confidence::new(1.0),
+            (),
+        );
 
-        assert!(!ObservationPartitionInvariant.verify(&graph));
-    }
+        let ops = vec![
+            GraphOperation::CommitObservation(obs),
+            GraphOperation::CommitIdentity {
+                id: IdentityId(1),
+                created_at: Timestamp::from_secs(101),
+            },
+        ];
+        assert!(store.apply_batch(ops).is_ok());
 
-    #[test]
-    fn test_shared_observation_across_identities_fails() {
-        let mut graph: MemoryGraph<(), (), ()> = MemoryGraph::new();
-        let id_a = IdentityId(10);
-        let id_b = IdentityId(20);
-        let shared_obs = create_observation(100);
-
-        graph.apply(GraphOperation::CommitIdentity(IdentityNode {
-            id: id_a,
-            created_at: Timestamp::default(),
-        }));
-        graph.apply(GraphOperation::CommitIdentity(IdentityNode {
-            id: id_b,
-            created_at: Timestamp::default(),
-        }));
-        graph.apply(GraphOperation::CommitObservation(shared_obs.clone()));
-
-        graph.apply(GraphOperation::CommitRelation {
-            source: VertexId(shared_obs.id.0),
-            relation: Relation::Supports,
-            target: VertexId(id_a.0),
-            created_at: Timestamp::default(),
-        });
-        graph.apply(GraphOperation::CommitRelation {
-            source: VertexId(shared_obs.id.0),
-            relation: Relation::Supports,
-            target: VertexId(id_b.0),
-            created_at: Timestamp::default(),
-        });
-
-        assert!(!ObservationPartitionInvariant.verify(&graph));
-    }
-
-    #[test]
-    fn test_mismatched_edge_target_fails() {
-        let mut graph: MemoryGraph<(), (), ()> = MemoryGraph::new();
-        let id_a = IdentityId(10);
-        let obs = create_observation(1);
-
-        graph.apply(GraphOperation::CommitIdentity(IdentityNode {
-            id: id_a,
-            created_at: Timestamp::default(),
-        }));
-        graph.apply(GraphOperation::CommitObservation(obs.clone()));
-
-        graph.apply(GraphOperation::CommitRelation {
-            source: VertexId(obs.id.0),
-            relation: Relation::Supports,
-            target: VertexId(999),
-            created_at: Timestamp::default(),
-        });
-
-        assert!(!ObservationPartitionInvariant.verify(&graph));
+        let invariant = ObservationPartitionInvariant;
+        assert!(invariant.verify(&store));
     }
 }

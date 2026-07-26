@@ -12,13 +12,13 @@ use criterion::{
 };
 use li_core::belief::BeliefState;
 use li_core::events::RuntimeEvent;
-use li_core::ids::{IdentityId, ObservationId, VertexId};
+use li_core::ids::{IdentityId, ObservationId};
 use li_core::observation::{Evidence, Modality, Observation, Timestamp};
+use li_core::ontology::Vertex;
 use li_core::probability::{Confidence, Probability};
 use li_core::relation::Relation;
 use li_factors::compiler::FactorCompiler;
 use li_factors::factor::{Factor, FactorScope};
-use li_model::ontology::IdentityNode;
 use li_model::operations::GraphOperation;
 use li_runtime::engine::{EngineConfig, RuntimeEngine};
 use li_runtime::executor::ExecutionSink;
@@ -39,6 +39,12 @@ pub struct BenchTrackSummary {
     pub last_x: f64,
     pub last_y: f64,
     pub last_timestamp: Timestamp,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BenchIdentityNode {
+    pub id: IdentityId,
+    pub created_at: Timestamp,
 }
 
 pub struct BenchSpatioTemporalFactor {
@@ -176,9 +182,9 @@ impl ActiveWorkspace for BenchWorkspace {
 
 #[derive(Default, Clone, Debug)]
 pub struct BenchGraphSink {
-    pub identities: Vec<IdentityNode>,
+    pub identities: Vec<BenchIdentityNode>,
     pub observations: Vec<Observation<BenchGpsPayload>>,
-    pub relations: Vec<(VertexId, Relation, VertexId, Timestamp)>,
+    pub relations: Vec<(Vertex, Relation, Vertex, Timestamp)>,
 }
 
 impl ExecutionSink<BenchGpsPayload, (), BenchTrackSummary> for BenchGraphSink {
@@ -194,8 +200,11 @@ impl ExecutionSink<BenchGpsPayload, (), BenchTrackSummary> for BenchGraphSink {
     ) -> Result<(), Self::Error> {
         for op in operations {
             match op {
-                GraphOperation::CommitIdentity(node) => {
-                    self.identities.push(node.clone())
+                GraphOperation::CommitIdentity { id, created_at } => {
+                    self.identities.push(BenchIdentityNode {
+                        id: *id,
+                        created_at: *created_at,
+                    });
                 },
                 GraphOperation::CommitObservation(obs) => {
                     self.observations.push(obs.clone())
@@ -258,9 +267,6 @@ fn generate_deterministic_dataset(
 fn bench_pipeline_ingestion(c: &mut Criterion) {
     let mut group =
         c.benchmark_group("RuntimePipeline::IngestionAndResolution");
-
-    // Augmentation du temps de mesure pour absorber le flux complet sur de
-    // grands volumes
     group.warm_up_time(Duration::from_secs(3));
     group.measurement_time(Duration::from_secs(25));
     group.sample_size(15);
@@ -315,8 +321,6 @@ fn bench_pipeline_ingestion(c: &mut Criterion) {
                             let obs_y = obs.payload.y;
                             let obs_timestamp = obs.timestamp;
 
-                            // Passage direct par valeur sans appel à .clone()
-                            // sur l'observation
                             let evidence = Evidence {
                                 observation: obs,
                                 candidates: candidate_ids,
@@ -331,9 +335,10 @@ fn bench_pipeline_ingestion(c: &mut Criterion) {
                             engine.tick::<()>().unwrap();
 
                             if let Some(last_rel) =
-                                engine.executor().sink().relations.last()
+                                engine.executor().sink().relations.last() &&
+                                let Vertex::Identity(assigned_id) =
+                                    last_rel.2
                             {
-                                let assigned_id = IdentityId(last_rel.2.0);
                                 engine.workspace_mut().insert(BeliefState {
                                     identity: assigned_id,
                                     summary: BenchTrackSummary {
@@ -384,7 +389,7 @@ fn bench_pipeline_scaling_active_beliefs(c: &mut Criterion) {
                             candidate_count as u64)
                             .map(|id| {
                                 let target_id = IdentityId(id);
-                                sink.identities.push(IdentityNode {
+                                sink.identities.push(BenchIdentityNode {
                                     id: target_id,
                                     created_at: Timestamp::from_millis(1000),
                                 });

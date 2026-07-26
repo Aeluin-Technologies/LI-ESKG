@@ -6,7 +6,7 @@ use crate::ids::{EventId, IdentityId, ObservationId, StateId, VertexId};
 
 /// Compile-time enforcement of the partitioned vertex set $V = O \sqcup I
 /// \sqcup E \sqcup S$.
-#[derive(Deserialize, Serialize, Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Deserialize, Serialize, Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum Vertex {
     /// Empirical observation node ($O$).
     Observation(ObservationId),

@@ -5,12 +5,11 @@ use alloc::vec::Vec;
 use core::marker::PhantomData;
 
 use li_core::belief::BeliefState;
-use li_core::ids::{IdentityId, ObservationId, VertexId};
-use li_core::observation::{Evidence, Observation};
+use li_core::ids::{EventId, IdentityId, ObservationId, StateId, VertexId};
+use li_core::observation::{Evidence, Observation, Timestamp};
 use li_core::ontology::Vertex;
 use li_core::relation::Relation;
 use li_model::graph::KnowledgeGraph;
-use li_model::ontology::Edge;
 use li_model::operations::GraphOperation;
 use serde::{Deserialize, Serialize};
 
@@ -21,6 +20,54 @@ use crate::keys::{
 };
 use crate::postcard_adapter::{deserialize, serialize};
 use crate::traits::{CheckpointStore, KvBackend, KvOp, WalStore};
+
+/// Directed ontology relation edge connecting a source vertex to a target
+/// vertex.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Edge {
+    /// Source vertex in the ontology graph.
+    pub source: Vertex,
+    /// Semantic relationship connecting source and target.
+    pub relation: Relation,
+    /// Target vertex in the ontology graph.
+    pub target: Vertex,
+    /// Timestamp when this relation was established.
+    pub created_at: Timestamp,
+}
+
+/// Internal layout for identity node serialization.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct IdentityNode {
+    pub id: IdentityId,
+    pub created_at: Timestamp,
+}
+
+/// Internal layout for event node serialization.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct EventNode<E> {
+    pub id: EventId,
+    pub timestamp: Timestamp,
+    pub payload: E,
+}
+
+/// Internal layout for state node serialization.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct StateNode<S> {
+    pub id: StateId,
+    pub timestamp: Timestamp,
+    pub payload: S,
+}
+
+/// Helper extracting the underlying [`VertexId`] representation from a domain
+/// [`Vertex`].
+fn vertex_to_id(vertex: Vertex) -> VertexId {
+    match vertex {
+        Vertex::Observation(id) => VertexId(id.0),
+        Vertex::Identity(id) => VertexId(id.0),
+        Vertex::Event(id) => VertexId(id.0),
+        Vertex::State(id) => VertexId(id.0),
+    }
+}
 
 /// Primary engine managing persistence over any KvBackend implementation.
 pub struct StorageEngine<B, P, E, S> {
@@ -56,6 +103,23 @@ impl<B: KvBackend, P, E, S> StorageEngine<B, P, E, S> {
             None => Ok(None),
         }
     }
+
+    /// Retrieves all outgoing edges originating from a source vertex.
+    pub fn out_edges(
+        &self,
+        source: VertexId,
+    ) -> Result<Vec<Edge>, StorageError> {
+        let prefix = encode_u64(source.0);
+        let records =
+            self.backend.prefix_scan(ColumnFamily::OutEdges, &prefix)?;
+
+        let mut edges = Vec::with_capacity(records.len());
+        for (_key, bytes) in records {
+            let edge: Edge = deserialize(&bytes)?;
+            edges.push(edge);
+        }
+        Ok(edges)
+    }
 }
 
 impl<B, P, E, S> KnowledgeGraph for StorageEngine<B, P, E, S>
@@ -70,12 +134,13 @@ where
     type ObservationPayload = P;
     type StatePayload = S;
 
-    /// Evaluates the ontological typology of a vertex within the set $V$.
+    /// Evaluates the ontological typology of a vertex within the set V.
     fn vertex_type(
         &self,
-        id: VertexId,
+        vertex: Vertex,
     ) -> Result<Option<Vertex>, Self::Error> {
-        let key = encode_u64(id.0);
+        let vid = vertex_to_id(vertex);
+        let key = encode_u64(vid.0);
         match self.backend.get(ColumnFamily::Ontology, &key)? {
             Some(bytes) => Ok(Some(deserialize(&bytes)?)),
             None => Ok(None),
@@ -86,9 +151,9 @@ where
     /// transition the graph state.
     fn apply_batch(
         &mut self,
-        ops: &[GraphOperation<P, E, S>],
+        ops: impl IntoIterator<Item = GraphOperation<P, E, S>>,
     ) -> Result<(), Self::Error> {
-        let mut batch = Vec::with_capacity(ops.len() * 3);
+        let mut batch = Vec::new();
 
         for op in ops {
             match op {
@@ -98,7 +163,7 @@ where
                     let vkey = encode_u64(vid.0);
 
                     let v_bytes = serialize(&Vertex::Observation(obs.id))?;
-                    let obs_bytes = serialize(obs)?;
+                    let obs_bytes = serialize(&obs)?;
 
                     batch.push(KvOp::Put {
                         cf: ColumnFamily::Ontology,
@@ -111,13 +176,14 @@ where
                         value: obs_bytes,
                     });
                 },
-                GraphOperation::CommitIdentity(identity) => {
-                    let vid = VertexId(identity.id.0);
-                    let key = encode_u64(identity.id.0);
+                GraphOperation::CommitIdentity { id, created_at } => {
+                    let vid = VertexId(id.0);
+                    let key = encode_u64(id.0);
                     let vkey = encode_u64(vid.0);
 
-                    let v_bytes = serialize(&Vertex::Identity(identity.id))?;
-                    let id_bytes = serialize(identity)?;
+                    let v_bytes = serialize(&Vertex::Identity(id))?;
+                    let node = IdentityNode { id, created_at };
+                    let id_bytes = serialize(&node)?;
 
                     batch.push(KvOp::Put {
                         cf: ColumnFamily::Ontology,
@@ -130,13 +196,22 @@ where
                         value: id_bytes,
                     });
                 },
-                GraphOperation::CommitEvent(event) => {
-                    let vid = VertexId(event.id.0);
-                    let key = encode_u64(event.id.0);
+                GraphOperation::CommitEvent {
+                    id,
+                    timestamp,
+                    payload,
+                } => {
+                    let vid = VertexId(id.0);
+                    let key = encode_u64(id.0);
                     let vkey = encode_u64(vid.0);
 
-                    let v_bytes = serialize(&Vertex::Event(event.id))?;
-                    let evt_bytes = serialize(event)?;
+                    let v_bytes = serialize(&Vertex::Event(id))?;
+                    let node = EventNode {
+                        id,
+                        timestamp,
+                        payload,
+                    };
+                    let evt_bytes = serialize(&node)?;
 
                     batch.push(KvOp::Put {
                         cf: ColumnFamily::Ontology,
@@ -149,13 +224,22 @@ where
                         value: evt_bytes,
                     });
                 },
-                GraphOperation::CommitState(state) => {
-                    let vid = VertexId(state.id.0);
-                    let key = encode_u64(state.id.0);
+                GraphOperation::CommitState {
+                    id,
+                    timestamp,
+                    payload,
+                } => {
+                    let vid = VertexId(id.0);
+                    let key = encode_u64(id.0);
                     let vkey = encode_u64(vid.0);
 
-                    let v_bytes = serialize(&Vertex::State(state.id))?;
-                    let st_bytes = serialize(state)?;
+                    let v_bytes = serialize(&Vertex::State(id))?;
+                    let node = StateNode {
+                        id,
+                        timestamp,
+                        payload,
+                    };
+                    let st_bytes = serialize(&node)?;
 
                     batch.push(KvOp::Put {
                         cf: ColumnFamily::Ontology,
@@ -175,17 +259,20 @@ where
                     created_at,
                 } => {
                     let edge = Edge {
-                        source: *source,
-                        relation: *relation,
-                        target: *target,
-                        created_at: *created_at,
+                        source,
+                        relation,
+                        target,
+                        created_at,
                     };
                     let edge_bytes = serialize(&edge)?;
 
+                    let source_id = vertex_to_id(source);
+                    let target_id = vertex_to_id(target);
+
                     let out_key =
-                        encode_out_edge_key(*source, *relation, *target);
+                        encode_out_edge_key(source_id, relation, target_id);
                     let in_key =
-                        encode_in_edge_key(*target, *relation, *source);
+                        encode_in_edge_key(target_id, relation, source_id);
 
                     batch.push(KvOp::Put {
                         cf: ColumnFamily::OutEdges,
@@ -217,8 +304,8 @@ where
         let mut observations = Vec::with_capacity(records.len());
         for (_key, edge_bytes) in records {
             let edge: Edge = deserialize(&edge_bytes)?;
-            if let Some(obs) =
-                self.fetch_observation(ObservationId(edge.source.0))?
+            if let Vertex::Observation(obs_id) = edge.source &&
+                let Some(obs) = self.fetch_observation(obs_id)?
             {
                 observations.push(obs);
             }
@@ -226,21 +313,7 @@ where
         Ok(observations)
     }
 
-    /// Retrieves all outgoing edges originating from a source vertex.
-    fn out_edges(&self, source: VertexId) -> Result<Vec<Edge>, Self::Error> {
-        let prefix = encode_u64(source.0);
-        let records =
-            self.backend.prefix_scan(ColumnFamily::OutEdges, &prefix)?;
-
-        let mut edges = Vec::with_capacity(records.len());
-        for (_key, bytes) in records {
-            let edge: Edge = deserialize(&bytes)?;
-            edges.push(edge);
-        }
-        Ok(edges)
-    }
-
-    /// Enumerates all identity identifiers defined in the graph $V$.
+    /// Enumerates all identity identifiers defined in the graph V.
     fn all_identities(&self) -> Result<Vec<IdentityId>, Self::Error> {
         let records =
             self.backend.prefix_scan(ColumnFamily::Identities, &[])?;
@@ -370,7 +443,6 @@ mod tests {
     use li_core::observation::{Evidence, Modality, Observation, Timestamp};
     use li_core::probability::{Confidence, Probability};
     use li_core::relation::Relation;
-    use li_model::ontology::{EventNode, IdentityNode, StateNode};
 
     use super::*;
     use crate::traits::KvRecord;
@@ -454,44 +526,48 @@ mod tests {
         let mut engine = create_test_engine();
 
         let obs = mock_observation(1);
-        let identity = IdentityNode {
-            id: IdentityId(10),
-            created_at: Timestamp::from_millis(1000),
-        };
-        let event = EventNode {
-            id: EventId(20),
-            timestamp: Timestamp::from_millis(1000),
-            payload: (),
-        };
-        let state = StateNode {
-            id: StateId(30),
-            timestamp: Timestamp::from_millis(1000),
-            payload: (),
-        };
+        let identity_id = IdentityId(10);
+        let event_id = EventId(20);
+        let state_id = StateId(30);
 
         let ops = vec![
             GraphOperation::CommitObservation(obs.clone()),
-            GraphOperation::CommitIdentity(identity),
-            GraphOperation::CommitEvent(event),
-            GraphOperation::CommitState(state),
+            GraphOperation::CommitIdentity {
+                id: identity_id,
+                created_at: Timestamp::from_millis(1000),
+            },
+            GraphOperation::CommitEvent {
+                id: event_id,
+                timestamp: Timestamp::from_millis(1000),
+                payload: (),
+            },
+            GraphOperation::CommitState {
+                id: state_id,
+                timestamp: Timestamp::from_millis(1000),
+                payload: (),
+            },
         ];
 
-        assert!(engine.apply_batch(&ops).is_ok());
+        assert!(engine.apply_batch(ops).is_ok());
 
         assert_eq!(
-            engine.vertex_type(VertexId(1)).unwrap(),
+            engine
+                .vertex_type(Vertex::Observation(ObservationId(1)))
+                .unwrap(),
             Some(Vertex::Observation(ObservationId(1)))
         );
         assert_eq!(
-            engine.vertex_type(VertexId(10)).unwrap(),
+            engine
+                .vertex_type(Vertex::Identity(IdentityId(10)))
+                .unwrap(),
             Some(Vertex::Identity(IdentityId(10)))
         );
         assert_eq!(
-            engine.vertex_type(VertexId(20)).unwrap(),
+            engine.vertex_type(Vertex::Event(EventId(20))).unwrap(),
             Some(Vertex::Event(EventId(20)))
         );
         assert_eq!(
-            engine.vertex_type(VertexId(30)).unwrap(),
+            engine.vertex_type(Vertex::State(StateId(30))).unwrap(),
             Some(Vertex::State(StateId(30)))
         );
 
@@ -504,29 +580,31 @@ mod tests {
         let mut engine = create_test_engine();
 
         let obs = mock_observation(100);
-        let identity = IdentityNode {
-            id: IdentityId(200),
-            created_at: Timestamp::from_millis(1000),
-        };
 
         let ops = vec![
             GraphOperation::CommitObservation(obs.clone()),
-            GraphOperation::CommitIdentity(identity),
+            GraphOperation::CommitIdentity {
+                id: IdentityId(200),
+                created_at: Timestamp::from_millis(1000),
+            },
             GraphOperation::CommitRelation {
-                source: VertexId(100),
+                source: Vertex::Observation(ObservationId(100)),
                 relation: Relation::Supports,
-                target: VertexId(200),
+                target: Vertex::Identity(IdentityId(200)),
                 created_at: Timestamp::from_millis(1000),
             },
         ];
 
-        assert!(engine.apply_batch(&ops).is_ok());
+        assert!(engine.apply_batch(ops).is_ok());
 
         let out_edges = engine.out_edges(VertexId(100)).unwrap();
         assert_eq!(out_edges.len(), 1);
-        assert_eq!(out_edges[0].source, VertexId(100));
+        assert_eq!(
+            out_edges[0].source,
+            Vertex::Observation(ObservationId(100))
+        );
         assert_eq!(out_edges[0].relation, Relation::Supports);
-        assert_eq!(out_edges[0].target, VertexId(200));
+        assert_eq!(out_edges[0].target, Vertex::Identity(IdentityId(200)));
 
         let support = engine.query_support_set(IdentityId(200)).unwrap();
         assert_eq!(support.len(), 1);
@@ -538,17 +616,17 @@ mod tests {
         let mut engine = create_test_engine();
 
         let ops = vec![
-            GraphOperation::CommitIdentity(IdentityNode {
+            GraphOperation::CommitIdentity {
                 id: IdentityId(1),
                 created_at: Timestamp::from_millis(100),
-            }),
-            GraphOperation::CommitIdentity(IdentityNode {
+            },
+            GraphOperation::CommitIdentity {
                 id: IdentityId(2),
                 created_at: Timestamp::from_millis(200),
-            }),
+            },
         ];
 
-        assert!(engine.apply_batch(&ops).is_ok());
+        assert!(engine.apply_batch(ops).is_ok());
 
         let mut ids = engine.all_identities().unwrap();
         ids.sort_by_key(|i| i.0);
@@ -619,7 +697,12 @@ mod tests {
             engine.fetch_observation(ObservationId(999)).unwrap(),
             None
         );
-        assert_eq!(engine.vertex_type(VertexId(999)).unwrap(), None);
+        assert_eq!(
+            engine
+                .vertex_type(Vertex::Identity(IdentityId(999)))
+                .unwrap(),
+            None
+        );
         assert!(engine.out_edges(VertexId(999)).unwrap().is_empty());
         assert!(
             engine
@@ -633,7 +716,8 @@ mod tests {
     fn test_edge_case_empty_batch_and_empty_queries() {
         let mut engine = create_test_engine();
 
-        assert!(engine.apply_batch(&[]).is_ok());
+        let empty_ops: Vec<GraphOperation<(), (), ()>> = Vec::new();
+        assert!(engine.apply_batch(empty_ops).is_ok());
         assert!(engine.all_identities().unwrap().is_empty());
         assert!(engine.load_latest_checkpoint().unwrap().is_empty());
         assert!(engine.read_delta(0).unwrap().is_empty());
