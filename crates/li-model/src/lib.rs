@@ -11,8 +11,10 @@ pub mod ontology;
 pub mod operations;
 pub mod projection;
 pub mod queries;
+pub mod spatial;
 
 pub use graph::{GraphError, KnowledgeGraph, PetGraphStore};
 pub use ontology::{EdgeData, NodeData};
 pub use operations::GraphOperation;
 pub use projection::{EventStateGraph, EventStateProjection, GraphProjection};
+pub use spatial::{GeoPoint, SpatialComponent};
