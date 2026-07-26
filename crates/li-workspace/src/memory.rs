@@ -82,7 +82,7 @@ impl<S: Clone + Send + Sync> ActiveWorkspace for InMemoryWorkspace<S> {
     ///     identity: IdentityId(101),
     ///     summary: [0.5, 0.8],
     ///     posterior: Probability::new(0.95),
-    ///     last_update: Timestamp(1000000),
+    ///     last_update: Timestamp::from_millis(1000000),
     /// };
     ///
     /// workspace.insert(belief);
@@ -186,11 +186,11 @@ impl<S: Clone + Send + Sync> ActiveWorkspace for InMemoryWorkspace<S> {
     ///     identity: IdentityId(1),
     ///     summary: (),
     ///     posterior: Probability::new(0.8),
-    ///     last_update: Timestamp(100),
+    ///     last_update: Timestamp::from_millis(100),
     /// });
     ///
     /// // Evict entries older than 50 microseconds relative to timestamp 200
-    /// let evicted = workspace.evict_expired(Timestamp(200), 50);
+    /// let evicted = workspace.evict_expired(Timestamp::from_millis(200), 50);
     /// assert_eq!(evicted.len(), 1);
     /// assert!(workspace.get(IdentityId(1)).is_none());
     /// ```
@@ -288,7 +288,7 @@ mod tests {
             identity: IdentityId(id),
             summary: id * 100,
             posterior: Probability::new(0.95),
-            last_update: Timestamp(timestamp),
+            last_update: Timestamp::from_millis(timestamp),
         }
     }
 
@@ -337,7 +337,7 @@ mod tests {
             identity: IdentityId(1),
             summary: 9999,
             posterior: Probability::new(0.99),
-            last_update: Timestamp(2000),
+            last_update: Timestamp::from_millis(2000),
         };
 
         workspace.insert(initial);
@@ -348,7 +348,7 @@ mod tests {
 
         let retrieved = workspace.get(IdentityId(1)).unwrap();
         assert_eq!(retrieved.summary, 9999);
-        assert_eq!(retrieved.last_update, Timestamp(2000));
+        assert_eq!(retrieved.last_update, Timestamp::from_millis(2000));
     }
 
     #[test]
@@ -373,7 +373,10 @@ mod tests {
 
         assert_eq!(workspace.len(), 3);
 
-        let evicted = workspace.evict_expired(Timestamp(1000), 500);
+        // Delta for 1 & 2 is 900 ms (900_000 us). Delta for 3 is 0 ms (0 us).
+        // TTL threshold set to 500 ms (500_000 us).
+        let evicted =
+            workspace.evict_expired(Timestamp::from_millis(1000), 500_000);
 
         assert_eq!(evicted.len(), 2);
         assert_eq!(workspace.len(), 1);
@@ -386,7 +389,8 @@ mod tests {
     #[test]
     fn test_evict_expired_on_empty_workspace() {
         let mut workspace = InMemoryWorkspace::<u64>::new();
-        let evicted = workspace.evict_expired(Timestamp(1000), 100);
+        let evicted =
+            workspace.evict_expired(Timestamp::from_millis(1000), 100_000);
 
         assert!(evicted.is_empty());
         assert_eq!(workspace.len(), 0);
@@ -398,7 +402,9 @@ mod tests {
         workspace.insert(mock_belief(1, 1000));
         workspace.insert(mock_belief(2, 1000));
 
-        let evicted = workspace.evict_expired(Timestamp(1050), 100);
+        // Elapsed time is 50 ms (50_000 us). TTL threshold set to 100 ms (100_000 us).
+        let evicted =
+            workspace.evict_expired(Timestamp::from_millis(1050), 100_000);
 
         assert!(evicted.is_empty());
         assert_eq!(workspace.len(), 2);
@@ -410,7 +416,9 @@ mod tests {
         workspace.insert(mock_belief(1, 100));
         workspace.insert(mock_belief(2, 200));
 
-        let evicted = workspace.evict_expired(Timestamp(1000), 100);
+        // Elapsed times are 900 ms and 800 ms. TTL threshold set to 100 ms (100_000 us).
+        let evicted =
+            workspace.evict_expired(Timestamp::from_millis(1000), 100_000);
 
         assert_eq!(evicted.len(), 2);
         assert_eq!(workspace.len(), 0);
@@ -423,7 +431,7 @@ mod tests {
         workspace.insert(mock_belief(10, 500));
         workspace.insert(mock_belief(20, 600));
 
-        let now = Timestamp(1000);
+        let now = Timestamp::from_millis(1000);
         let snapshot = workspace.create_snapshot(now);
 
         assert_eq!(snapshot.timestamp, now);
@@ -453,10 +461,11 @@ mod tests {
         let active = workspace.active_beliefs();
         assert_eq!(active.len(), total_items);
 
-        let snapshot = workspace.create_snapshot(Timestamp(2000));
+        let snapshot = workspace.create_snapshot(Timestamp::from_millis(2000));
         assert_eq!(snapshot.active_states.len(), total_items);
 
-        let evicted = workspace.evict_expired(Timestamp(2000), 1000);
+        let evicted =
+            workspace.evict_expired(Timestamp::from_millis(2000), 1_500_000);
 
         let expected_evicted = total_items / 2;
         assert_eq!(evicted.len(), expected_evicted);

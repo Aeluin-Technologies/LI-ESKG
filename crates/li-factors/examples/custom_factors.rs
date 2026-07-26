@@ -70,8 +70,8 @@ fn main() {
     let obs = Observation {
         id: li_core::ids::ObservationId(1),
         modality: li_core::observation::Modality(1),
-        timestamp: Timestamp(1000),
-        confidence: li_core::probability::Confidence(0.95),
+        timestamp: Timestamp::from_millis(1000),
+        confidence: li_core::probability::Confidence::new(0.95),
         payload: CustomSpatialPayload { x: 10.0, y: 20.0 },
     };
 
@@ -82,14 +82,16 @@ fn main() {
             last_y: 20.0,
         },
         posterior: Probability::new(0.8),
-        last_update: Timestamp(900),
+        last_update: Timestamp::from_millis(900),
     };
 
     let score = evaluator.evaluate(&obs, &belief);
-    assert!(score.0 > 0.0);
+    assert!(score.value() > 0.0);
 
     println!(
         "Evaluated spatial compatibility score between observation {} and identity {}: {:.4}",
-        obs.id.0, belief.identity.0, score.0
+        obs.id.0,
+        belief.identity.0,
+        score.value()
     );
 }

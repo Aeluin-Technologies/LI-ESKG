@@ -37,7 +37,7 @@ use crate::queries::{IdentitySetQuery, NeighborhoodQuery, SupportSetQuery};
 /// let id = IdentityId(42);
 /// let op = GraphOperation::CommitIdentity(IdentityNode {
 ///     id,
-///     created_at: Timestamp(1710000000),
+///     created_at: Timestamp::from_millis(1710000000),
 /// });
 /// graph.apply(op);
 ///
@@ -260,16 +260,12 @@ mod tests {
 
     use super::*;
 
-    fn dummy_confidence() -> Confidence {
-        Confidence(0.78)
-    }
-
     #[test]
     fn test_symmetric_edges_on_relation_commit() {
         let mut graph: MemoryGraph<(), (), ()> = MemoryGraph::new();
         let source = VertexId(1);
         let target = VertexId(2);
-        let timestamp = Timestamp(1000);
+        let timestamp = Timestamp::from_millis(1000);
 
         let op = GraphOperation::CommitRelation {
             source,
@@ -297,14 +293,14 @@ mod tests {
 
         graph.apply(GraphOperation::CommitIdentity(IdentityNode {
             id: identity_id,
-            created_at: Timestamp(500),
+            created_at: Timestamp::from_millis(500),
         }));
 
         graph.apply(GraphOperation::CommitObservation(Observation {
             id: obs_id,
             modality: Modality(1),
-            timestamp: Timestamp(500),
-            confidence: dummy_confidence(),
+            timestamp: Timestamp::from_millis(500),
+            confidence: Confidence::new(0.78),
             payload: "sensor_reading",
         }));
 
@@ -312,7 +308,7 @@ mod tests {
             source: VertexId(obs_id.0),
             relation: Relation::Supports,
             target: VertexId(identity_id.0),
-            created_at: Timestamp(501),
+            created_at: Timestamp::from_millis(501),
         });
 
         let support =
@@ -332,19 +328,19 @@ mod tests {
 
         graph.apply(GraphOperation::CommitEvent(EventNode {
             id: event_id,
-            timestamp: Timestamp(100),
+            timestamp: Timestamp::from_millis(100),
             payload: "state_transition_trigger",
         }));
         graph.apply(GraphOperation::CommitState(StateNode {
             id: state_id,
-            timestamp: Timestamp(101),
+            timestamp: Timestamp::from_millis(101),
             payload: "active_state",
         }));
         graph.apply(GraphOperation::CommitObservation(Observation {
             id: obs_id,
             modality: Modality(1),
-            timestamp: Timestamp(100),
-            confidence: dummy_confidence(),
+            timestamp: Timestamp::from_millis(100),
+            confidence: Confidence::new(0.78),
             payload: (),
         }));
 
@@ -352,14 +348,14 @@ mod tests {
             source: VertexId(event_id.0),
             relation: Relation::Supports,
             target: VertexId(state_id.0),
-            created_at: Timestamp(102),
+            created_at: Timestamp::from_millis(102),
         });
 
         graph.apply(GraphOperation::CommitRelation {
             source: VertexId(obs_id.0),
             relation: Relation::Supports,
             target: VertexId(event_id.0),
-            created_at: Timestamp(102),
+            created_at: Timestamp::from_millis(102),
         });
 
         let projected_graph = EventStateProjection::project(&graph);
@@ -376,11 +372,11 @@ mod tests {
 
         graph.apply(GraphOperation::CommitIdentity(IdentityNode {
             id: IdentityId(1),
-            created_at: Timestamp(0),
+            created_at: Timestamp::default(),
         }));
         graph.apply(GraphOperation::CommitIdentity(IdentityNode {
             id: IdentityId(2),
-            created_at: Timestamp(0),
+            created_at: Timestamp::default(),
         }));
 
         let mut identities = KnowledgeGraph::all_identities(&graph).unwrap();

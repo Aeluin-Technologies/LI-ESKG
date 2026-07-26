@@ -86,8 +86,8 @@ mod tests {
         Observation {
             id: ObservationId(id),
             modality: Modality(modality),
-            timestamp: Timestamp(time),
-            confidence: Confidence(0.7),
+            timestamp: Timestamp::from_micros(time),
+            confidence: Confidence::new(0.7),
             payload: (),
         }
     }
@@ -99,7 +99,7 @@ mod tests {
         for (id, obs_list) in identities {
             graph.apply(GraphOperation::CommitIdentity(IdentityNode {
                 id,
-                created_at: Timestamp(0),
+                created_at: Timestamp::default(),
             }));
             for obs in obs_list {
                 let obs_vid = VertexId(obs.id.0);
@@ -108,7 +108,7 @@ mod tests {
                     source: obs_vid,
                     relation: Relation::Supports,
                     target: VertexId(id.0),
-                    created_at: Timestamp(0),
+                    created_at: Timestamp::default(),
                 });
             }
         }

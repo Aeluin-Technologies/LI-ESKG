@@ -41,7 +41,7 @@ impl MapEstimator {
         let mut max_prob = decision_threshold;
 
         for marginal in &posteriors.marginals {
-            if marginal.probability.0 > max_prob.0 {
+            if marginal.probability.value() > max_prob.value() {
                 max_prob = marginal.probability;
                 best_identity = Some(marginal.identity);
             }

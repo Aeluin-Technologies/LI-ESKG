@@ -5,3 +5,5 @@ edition = "2024"
 
 [dependencies]
 serde = { version = "1", features = ["derive", "alloc"] }
+libm = "0.2"
+chrono = "0.4"

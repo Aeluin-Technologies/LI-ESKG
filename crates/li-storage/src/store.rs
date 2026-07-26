@@ -443,8 +443,8 @@ mod tests {
         Observation {
             id: ObservationId(id),
             modality: Modality(1),
-            timestamp: Timestamp(1000),
-            confidence: Confidence(0.95),
+            timestamp: Timestamp::from_millis(1000),
+            confidence: Confidence::new(0.95),
             payload: (),
         }
     }
@@ -456,16 +456,16 @@ mod tests {
         let obs = mock_observation(1);
         let identity = IdentityNode {
             id: IdentityId(10),
-            created_at: Timestamp(1000),
+            created_at: Timestamp::from_millis(1000),
         };
         let event = EventNode {
             id: EventId(20),
-            timestamp: Timestamp(1000),
+            timestamp: Timestamp::from_millis(1000),
             payload: (),
         };
         let state = StateNode {
             id: StateId(30),
-            timestamp: Timestamp(1000),
+            timestamp: Timestamp::from_millis(1000),
             payload: (),
         };
 
@@ -506,7 +506,7 @@ mod tests {
         let obs = mock_observation(100);
         let identity = IdentityNode {
             id: IdentityId(200),
-            created_at: Timestamp(1000),
+            created_at: Timestamp::from_millis(1000),
         };
 
         let ops = vec![
@@ -516,7 +516,7 @@ mod tests {
                 source: VertexId(100),
                 relation: Relation::Supports,
                 target: VertexId(200),
-                created_at: Timestamp(1000),
+                created_at: Timestamp::from_millis(1000),
             },
         ];
 
@@ -540,11 +540,11 @@ mod tests {
         let ops = vec![
             GraphOperation::CommitIdentity(IdentityNode {
                 id: IdentityId(1),
-                created_at: Timestamp(100),
+                created_at: Timestamp::from_millis(100),
             }),
             GraphOperation::CommitIdentity(IdentityNode {
                 id: IdentityId(2),
-                created_at: Timestamp(200),
+                created_at: Timestamp::from_millis(200),
             }),
         ];
 
@@ -564,13 +564,13 @@ mod tests {
                 identity: IdentityId(1),
                 summary: (),
                 posterior: Probability::new(0.8),
-                last_update: Timestamp(500),
+                last_update: Timestamp::from_millis(500),
             },
             BeliefState {
                 identity: IdentityId(2),
                 summary: (),
                 posterior: Probability::new(0.3),
-                last_update: Timestamp(600),
+                last_update: Timestamp::from_millis(600),
             },
         ];
 

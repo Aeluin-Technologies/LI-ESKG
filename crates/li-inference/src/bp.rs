@@ -57,10 +57,10 @@ impl BeliefPropagationSolver {
                 let factor = &graph.factors[f_idx.0];
 
                 let scope_active = &[var.candidate_identity];
-                score_active *= factor.evaluate(scope_active).0;
+                score_active *= factor.evaluate(scope_active).value();
 
                 let scope_inactive = &[IdentityId(0)];
-                score_inactive *= factor.evaluate(scope_inactive).0;
+                score_inactive *= factor.evaluate(scope_inactive).value();
             }
 
             let total_mass = score_active + score_inactive;

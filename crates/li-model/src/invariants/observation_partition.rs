@@ -96,8 +96,8 @@ mod tests {
         Observation {
             id: ObservationId(id),
             modality: Modality(1),
-            timestamp: Timestamp(0),
-            confidence: Confidence(0.7),
+            timestamp: Timestamp::default(),
+            confidence: Confidence::new(0.7),
             payload: (),
         }
     }
@@ -118,11 +118,11 @@ mod tests {
 
         graph.apply(GraphOperation::CommitIdentity(IdentityNode {
             id: id_a,
-            created_at: Timestamp(0),
+            created_at: Timestamp::default(),
         }));
         graph.apply(GraphOperation::CommitIdentity(IdentityNode {
             id: id_b,
-            created_at: Timestamp(0),
+            created_at: Timestamp::default(),
         }));
         graph.apply(GraphOperation::CommitObservation(obs_1.clone()));
         graph.apply(GraphOperation::CommitObservation(obs_2.clone()));
@@ -131,13 +131,13 @@ mod tests {
             source: VertexId(obs_1.id.0),
             relation: Relation::Supports,
             target: VertexId(id_a.0),
-            created_at: Timestamp(0),
+            created_at: Timestamp::default(),
         });
         graph.apply(GraphOperation::CommitRelation {
             source: VertexId(obs_2.id.0),
             relation: Relation::Supports,
             target: VertexId(id_b.0),
-            created_at: Timestamp(0),
+            created_at: Timestamp::default(),
         });
 
         assert!(ObservationPartitionInvariant.verify(&graph));
@@ -149,7 +149,7 @@ mod tests {
         let id_a = IdentityId(10);
         graph.apply(GraphOperation::CommitIdentity(IdentityNode {
             id: id_a,
-            created_at: Timestamp(0),
+            created_at: Timestamp::default(),
         }));
 
         assert!(!ObservationPartitionInvariant.verify(&graph));
@@ -164,11 +164,11 @@ mod tests {
 
         graph.apply(GraphOperation::CommitIdentity(IdentityNode {
             id: id_a,
-            created_at: Timestamp(0),
+            created_at: Timestamp::default(),
         }));
         graph.apply(GraphOperation::CommitIdentity(IdentityNode {
             id: id_b,
-            created_at: Timestamp(0),
+            created_at: Timestamp::default(),
         }));
         graph.apply(GraphOperation::CommitObservation(shared_obs.clone()));
 
@@ -176,13 +176,13 @@ mod tests {
             source: VertexId(shared_obs.id.0),
             relation: Relation::Supports,
             target: VertexId(id_a.0),
-            created_at: Timestamp(0),
+            created_at: Timestamp::default(),
         });
         graph.apply(GraphOperation::CommitRelation {
             source: VertexId(shared_obs.id.0),
             relation: Relation::Supports,
             target: VertexId(id_b.0),
-            created_at: Timestamp(0),
+            created_at: Timestamp::default(),
         });
 
         assert!(!ObservationPartitionInvariant.verify(&graph));
@@ -196,7 +196,7 @@ mod tests {
 
         graph.apply(GraphOperation::CommitIdentity(IdentityNode {
             id: id_a,
-            created_at: Timestamp(0),
+            created_at: Timestamp::default(),
         }));
         graph.apply(GraphOperation::CommitObservation(obs.clone()));
 
@@ -204,7 +204,7 @@ mod tests {
             source: VertexId(obs.id.0),
             relation: Relation::Supports,
             target: VertexId(999),
-            created_at: Timestamp(0),
+            created_at: Timestamp::default(),
         });
 
         assert!(!ObservationPartitionInvariant.verify(&graph));

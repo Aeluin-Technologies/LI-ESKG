@@ -140,12 +140,12 @@ impl<P, E, S, W, FC, Sink> RuntimeEngine<P, E, S, W, FC, Sink> {
                     source: VertexId(target.0),
                     relation: Relation::Refines,
                     target: VertexId(duplicate.0),
-                    created_at: Timestamp(0),
+                    created_at: Timestamp::default(),
                 }]);
                 self.executor.commit(ops)?;
             },
             DispatchOutcome::TriggerCheckpoint => {
-                self.workspace.create_snapshot(Timestamp(0));
+                self.workspace.create_snapshot(Timestamp::default());
             },
             DispatchOutcome::Shutdown => {
                 self.is_running = false;

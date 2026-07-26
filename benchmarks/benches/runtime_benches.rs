@@ -99,10 +99,10 @@ impl FactorCompiler<BenchGpsPayload, BenchTrackSummary>
                     candidate_id: cand_id,
                     obs_x: evidence.observation.payload.x,
                     obs_y: evidence.observation.payload.y,
-                    obs_time: evidence.observation.timestamp.0,
+                    obs_time: evidence.observation.timestamp.as_micros(),
                     belief_x: belief.summary.last_x,
                     belief_y: belief.summary.last_y,
-                    belief_time: belief.summary.last_timestamp.0,
+                    belief_time: belief.summary.last_timestamp.as_micros(),
                 }));
             }
         }
@@ -153,7 +153,7 @@ impl ActiveWorkspace for BenchWorkspace {
         let mut retained = Vec::new();
         let mut evicted = Vec::new();
         for b in self.beliefs.drain(..) {
-            if current_time.0 - b.last_update.0 > ttl {
+            if current_time.as_micros() - b.last_update.as_micros() > ttl {
                 evicted.push(b);
             } else {
                 retained.push(b);
@@ -240,8 +240,8 @@ fn generate_deterministic_dataset(
             observations.push(Observation {
                 id: ObservationId(obs_id),
                 modality: Modality(1),
-                timestamp: Timestamp(current_time),
-                confidence: Confidence(rng.random_range(0.80..0.98)),
+                timestamp: Timestamp::from_millis(current_time),
+                confidence: Confidence::new(rng.random_range(0.80..0.98)),
                 payload: BenchGpsPayload {
                     x: base_x + (step as f64 * 5.0) + noise_x,
                     y: base_y + (step as f64 * 2.0) + noise_y,
@@ -251,7 +251,7 @@ fn generate_deterministic_dataset(
         }
     }
 
-    observations.sort_by_key(|o| o.timestamp.0);
+    observations.sort_by_key(|o| o.timestamp.as_micros());
     observations
 }
 
@@ -386,17 +386,19 @@ fn bench_pipeline_scaling_active_beliefs(c: &mut Criterion) {
                                 let target_id = IdentityId(id);
                                 sink.identities.push(IdentityNode {
                                     id: target_id,
-                                    created_at: Timestamp(1000),
+                                    created_at: Timestamp::from_millis(1000),
                                 });
                                 workspace.insert(BeliefState {
                                     identity: target_id,
                                     summary: BenchTrackSummary {
                                         last_x: (id as f64) * 10.0,
                                         last_y: (id as f64) * 10.0,
-                                        last_timestamp: Timestamp(1000),
+                                        last_timestamp: Timestamp::from_millis(
+                                            1000,
+                                        ),
                                     },
                                     posterior: Probability::new(0.85),
-                                    last_update: Timestamp(1000),
+                                    last_update: Timestamp::from_millis(1000),
                                 });
                                 target_id
                             })
@@ -420,8 +422,8 @@ fn bench_pipeline_scaling_active_beliefs(c: &mut Criterion) {
                         let obs = Observation {
                             id: ObservationId(999_999),
                             modality: Modality(1),
-                            timestamp: Timestamp(2000),
-                            confidence: Confidence(0.92),
+                            timestamp: Timestamp::from_millis(2000),
+                            confidence: Confidence::new(0.92),
                             payload: BenchGpsPayload { x: 500.0, y: 500.0 },
                         };
 
@@ -473,17 +475,23 @@ fn bench_pipeline_eviction_lifecycle(c: &mut Criterion) {
                                 summary: BenchTrackSummary {
                                     last_x: 0.0,
                                     last_y: 0.0,
-                                    last_timestamp: Timestamp(last_update),
+                                    last_timestamp: Timestamp::from_millis(
+                                        last_update,
+                                    ),
                                 },
                                 posterior: Probability::new(0.8),
-                                last_update: Timestamp(last_update),
+                                last_update: Timestamp::from_millis(
+                                    last_update,
+                                ),
                             });
                         }
                         workspace
                     },
                     |mut ws| {
-                        let evicted =
-                            ws.evict_expired(Timestamp(1_000_000), 500_000);
+                        let evicted = ws.evict_expired(
+                            Timestamp::from_millis(1_000_000),
+                            500_000,
+                        );
                         black_box(evicted);
                         black_box(ws);
                     },

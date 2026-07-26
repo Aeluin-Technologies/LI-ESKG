@@ -43,7 +43,7 @@ fn setup_workspace(
             identity: IdentityId(i),
             summary: TrackingSummary::default(),
             posterior: Probability::new(0.95),
-            last_update: Timestamp(base_timestamp + ts_offset),
+            last_update: Timestamp::from_millis(base_timestamp + ts_offset),
         });
     }
     workspace
@@ -82,7 +82,7 @@ fn bench_workspace_insert(c: &mut Criterion) {
                                 ),
                                 summary: TrackingSummary::default(),
                                 posterior: Probability::new(0.99),
-                                last_update: Timestamp(1_000_100),
+                                last_update: Timestamp::from_millis(1_000_100),
                             })
                             .collect();
 
@@ -188,7 +188,7 @@ fn bench_workspace_eviction(c: &mut Criterion) {
                 identity: IdentityId(i),
                 summary: TrackingSummary::default(),
                 posterior: Probability::new(0.8),
-                last_update: Timestamp(last_update),
+                last_update: Timestamp::from_millis(last_update),
             });
         }
 
@@ -199,8 +199,10 @@ fn bench_workspace_eviction(c: &mut Criterion) {
                 b.iter_batched(
                     || template_10.clone(),
                     |mut ws| {
-                        let evicted =
-                            ws.evict_expired(Timestamp(1_000_000), 500_000);
+                        let evicted = ws.evict_expired(
+                            Timestamp::from_millis(1_000_000),
+                            500_000,
+                        );
                         black_box(evicted);
                         black_box(ws);
                     },
@@ -216,7 +218,7 @@ fn bench_workspace_eviction(c: &mut Criterion) {
                 identity: IdentityId(i),
                 summary: TrackingSummary::default(),
                 posterior: Probability::new(0.8),
-                last_update: Timestamp(last_update),
+                last_update: Timestamp::from_millis(last_update),
             });
         }
 
@@ -227,8 +229,10 @@ fn bench_workspace_eviction(c: &mut Criterion) {
                 b.iter_batched(
                     || template_50.clone(),
                     |mut ws| {
-                        let evicted =
-                            ws.evict_expired(Timestamp(1_000_000), 500_000);
+                        let evicted = ws.evict_expired(
+                            Timestamp::from_millis(1_000_000),
+                            500_000,
+                        );
                         black_box(evicted);
                         black_box(ws);
                     },
@@ -258,10 +262,9 @@ fn bench_workspace_snapshot(c: &mut Criterion) {
             &size,
             |b, _| {
                 b.iter(|| {
-                    black_box(
-                        workspace
-                            .create_snapshot(black_box(Timestamp(1_000_000))),
-                    );
+                    black_box(workspace.create_snapshot(black_box(
+                        Timestamp::from_millis(1_000_000),
+                    )));
                 });
             },
         );

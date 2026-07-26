@@ -119,8 +119,10 @@ fn generate_valid_bench_graph(
             current_identity_support.push(Observation {
                 id: ObservationId(obs_raw_id),
                 modality: Modality(1),
-                timestamp: Timestamp(obs_raw_id.try_into().unwrap()),
-                confidence: Confidence(0.7),
+                timestamp: Timestamp::from_millis(
+                    obs_raw_id.try_into().unwrap(),
+                ),
+                confidence: Confidence::new(0.7),
                 payload: (),
             });
 
@@ -128,7 +130,7 @@ fn generate_valid_bench_graph(
                 relation: Relation::Supports,
                 target: VertexId(identity_id.0),
                 source: VertexId(obs_raw_id),
-                created_at: Timestamp(0),
+                created_at: Timestamp::default(),
             };
 
             edges.entry(obs_raw_id).or_default().push(support_edge);
@@ -146,7 +148,7 @@ fn generate_valid_bench_graph(
             relation: Relation::Supports,
             target: VertexId(tgt),
             source: VertexId(src),
-            created_at: Timestamp(0),
+            created_at: Timestamp::default(),
         };
 
         edges.entry(src).or_default().push(noise_edge);

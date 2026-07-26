@@ -346,8 +346,8 @@ mod tests {
             observation: Observation {
                 id: ObservationId(50),
                 modality: Modality(1),
-                timestamp: Timestamp(1000),
-                confidence: Confidence(0.9),
+                timestamp: Timestamp::from_millis(1000),
+                confidence: Confidence::new(0.9),
                 payload: MockPayload,
             },
             candidates: Vec::new(),
@@ -386,7 +386,7 @@ mod tests {
             identity: IdentityId(10),
             summary: MockSummary,
             posterior: Probability::new(0.1),
-            last_update: Timestamp(0),
+            last_update: Timestamp::default(),
         });
 
         let compiler = MockCompiler { return_value: 0.2 };
@@ -395,8 +395,8 @@ mod tests {
             observation: Observation {
                 id: ObservationId(99),
                 modality: Modality(1),
-                timestamp: Timestamp(2000),
-                confidence: Confidence(0.9),
+                timestamp: Timestamp::from_millis(2000),
+                confidence: Confidence::new(0.9),
                 payload: MockPayload,
             },
             candidates: alloc::vec![IdentityId(10)],
@@ -435,7 +435,7 @@ mod tests {
             identity: IdentityId(10),
             summary: MockSummary,
             posterior: Probability::new(0.1),
-            last_update: Timestamp(0),
+            last_update: Timestamp::default(),
         });
 
         let compiler = MockCompiler { return_value: 0.95 };
@@ -444,8 +444,8 @@ mod tests {
             observation: Observation {
                 id: ObservationId(200),
                 modality: Modality(1),
-                timestamp: Timestamp(3000),
-                confidence: Confidence(0.9),
+                timestamp: Timestamp::from_millis(3000),
+                confidence: Confidence::new(0.9),
                 payload: MockPayload,
             },
             candidates: alloc::vec![IdentityId(10)],
@@ -482,7 +482,7 @@ mod tests {
         }
 
         let updated_belief = workspace.get(IdentityId(10)).unwrap();
-        assert_eq!(updated_belief.last_update, Timestamp(3000));
+        assert_eq!(updated_belief.last_update, Timestamp::from_millis(3000));
         assert_eq!(updated_belief.posterior, Probability::new(0.95));
     }
 }
