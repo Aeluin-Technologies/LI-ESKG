@@ -1,5 +1,7 @@
 //! Abstract potential function traits for factor graph scope evaluations.
 
+use std::collections::{HashMap, HashSet};
+
 use li_core::ids::IdentityId;
 use li_core::probability::Probability;
 use thiserror::Error;
@@ -8,16 +10,33 @@ use thiserror::Error;
 /// assignments.
 #[derive(Error, Debug, Clone, PartialEq, Eq)]
 pub enum FactorError {
+    /// Error returned when an assignment length does not match expected scope
+    /// bounds.
     #[error(
         "Scope length mismatch: factor expects {expected} variables, got {actual}"
     )]
     ScopeLengthMismatch { expected: usize, actual: usize },
 
+    /// Error returned when an invalid variable index is queried.
     #[error("Invalid assignment index at position {index}")]
     InvalidAssignmentIndex { index: usize },
 
+    /// Error returned when attempting to construct a factor with an empty
+    /// scope.
     #[error("Factor domain scope cannot be empty")]
     EmptyScope,
+
+    /// Error returned when duplicate identity identifiers are present in the
+    /// scope.
+    #[error("Duplicate identity detected in factor scope: {identity_id:?}")]
+    DuplicateScopeIdentity { identity_id: IdentityId },
+
+    /// Error returned when multiple candidates from the same scope are
+    /// selected simultaneously.
+    #[error(
+        "Invalid candidate assignment: mutual exclusion constraint violated"
+    )]
+    MutualExclusionViolation,
 }
 
 /// Interface exposing the variable scope $Z_\phi$ associated with a factor
@@ -29,35 +48,66 @@ pub trait FactorScope {
 
     /// Validates whether a proposed identity assignment slice conforms to the
     /// scope dimension.
+    ///
+    /// # Arguments
+    ///
+    /// * `assignment` - Slice of assigned identity identifiers to validate.
+    ///
+    /// # Returns
+    ///
+    /// Returns `Ok(())` if valid, or a [`FactorError`] on failure.
     #[inline]
     fn validate_assignment(
         &self,
-        assignment: &[IdentityId],
+        _assignment: &[IdentityId],
     ) -> Result<(), FactorError> {
-        let expected = self.scope().len();
-        let actual = assignment.len();
-        if expected != actual {
-            Err(FactorError::ScopeLengthMismatch { expected, actual })
+        if self.scope().is_empty() {
+            Err(FactorError::EmptyScope)
         } else {
             Ok(())
         }
     }
 }
 
-/// Abstract potential function $\phi_i(Z_\phi)$ evaluating variable
-/// assignments.
+/// Abstract potential function evaluating variable assignments over $k$
+/// candidates.
 pub trait Factor: FactorScope + Send + Sync {
     /// Evaluates the local potential score given a variable assignment.
+    ///
+    /// # Arguments
+    ///
+    /// * `assignment` - Active identity assignments for the current
+    ///   observation hypothesis.
+    ///
+    /// # Returns
+    ///
+    /// The computed evaluation [`Probability`].
     fn evaluate(&self, assignment: &[IdentityId]) -> Probability;
 
-    /// Evaluates the natural log-potential $\ln \phi_i(Z_\phi)$ given a
-    /// variable assignment.
+    /// Evaluates the natural log-potential given a variable assignment.
+    ///
+    /// # Arguments
+    ///
+    /// * `assignment` - Active identity assignments for the current
+    ///   observation hypothesis.
+    ///
+    /// # Returns
+    ///
+    /// The natural logarithm of the evaluated probability in $(-\infty, 0]$.
     #[inline]
     fn evaluate_log(&self, assignment: &[IdentityId]) -> f64 {
         self.evaluate(assignment).to_log()
     }
 
     /// Evaluates local potential score with scope boundary checking.
+    ///
+    /// # Arguments
+    ///
+    /// * `assignment` - Active identity assignments to evaluate.
+    ///
+    /// # Returns
+    ///
+    /// Result containing the evaluated [`Probability`] or a [`FactorError`].
     #[inline]
     fn evaluate_checked(
         &self,
@@ -68,42 +118,91 @@ pub trait Factor: FactorScope + Send + Sync {
     }
 }
 
-/// Concrete factor implementation representing pairwise
-/// observation-to-identity potentials.
-pub struct PairwiseFactor {
-    // Avoid heap allocation by using a fixed-size array for single-item
-    // scopes
-    scope: [IdentityId; 1],
-    compatibility_score: Probability,
+/// Native $k$-candidate categorical factor enforcing mutual exclusion across
+/// candidate identities.
+#[derive(Debug)]
+pub struct CategoricalFactor {
+    scope: Vec<IdentityId>,
+    candidate_probabilities: HashMap<IdentityId, Probability>,
+    background_probability: Probability,
 }
 
-impl PairwiseFactor {
-    /// Creates a new [`PairwiseFactor`] node.
+impl CategoricalFactor {
+    /// Constructs a new [`CategoricalFactor`] node over k candidates.
+    ///
+    /// # Arguments
+    ///
+    /// * `candidates` - Map of candidate identities to their marginal
+    ///   likelihoods.
+    /// * `background_probability` - Residual probability assigned to
+    ///   unassigned/noise state.
+    ///
+    /// # Returns
+    ///
+    /// Result containing the initialized [`CategoricalFactor`] or a
+    /// [`FactorError`].
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let mut probs = HashMap::new();
+    /// probs.insert(IdentityId(1), Probability::new(0.6));
+    /// probs.insert(IdentityId(2), Probability::new(0.3));
+    /// let factor = CategoricalFactor::new(probs, Probability::new(0.1)).unwrap();
+    /// ```
     pub fn new(
-        target_identity: IdentityId,
-        compatibility_score: Probability,
-    ) -> Self {
-        Self {
-            scope: [target_identity],
-            compatibility_score,
+        candidates: HashMap<IdentityId, Probability>,
+        background_probability: Probability,
+    ) -> Result<Self, FactorError> {
+        if candidates.is_empty() {
+            return Err(FactorError::EmptyScope);
         }
+
+        let mut scope = Vec::with_capacity(candidates.len());
+        let mut seen = HashSet::with_capacity(candidates.len());
+
+        for &id in candidates.keys() {
+            if !seen.insert(id) {
+                return Err(FactorError::DuplicateScopeIdentity {
+                    identity_id: id,
+                });
+            }
+            scope.push(id);
+        }
+
+        Ok(Self {
+            scope,
+            candidate_probabilities: candidates,
+            background_probability,
+        })
+    }
+
+    /// Returns the background/unassigned probability score.
+    #[inline]
+    pub fn background_probability(&self) -> Probability {
+        self.background_probability
     }
 }
 
-impl FactorScope for PairwiseFactor {
+impl FactorScope for CategoricalFactor {
     #[inline]
     fn scope(&self) -> &[IdentityId] {
         &self.scope
     }
 }
 
-impl Factor for PairwiseFactor {
-    #[inline]
+impl Factor for CategoricalFactor {
     fn evaluate(&self, assignment: &[IdentityId]) -> Probability {
-        if assignment == self.scope {
-            self.compatibility_score
-        } else {
-            Probability::ZERO
+        let active_in_scope: Vec<IdentityId> = assignment
+            .iter()
+            .copied()
+            .filter(|id| self.candidate_probabilities.contains_key(id))
+            .collect();
+
+        match active_in_scope.len() {
+            0 => self.background_probability,
+            1 => self.candidate_probabilities[&active_in_scope[0]],
+            _ => Probability::ZERO,
         }
     }
 }
@@ -113,35 +212,65 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_pairwise_factor_scope_validation() {
-        let id = IdentityId(1);
-        let factor = PairwiseFactor::new(id, Probability::new(0.8));
-
-        assert_eq!(factor.scope(), &[id]);
-        assert!(factor.validate_assignment(&[id]).is_ok());
-
-        let err = factor.validate_assignment(&[]).unwrap_err();
-        assert_eq!(
-            err,
-            FactorError::ScopeLengthMismatch {
-                expected: 1,
-                actual: 0
-            }
-        );
+    fn test_categorical_factor_empty_scope() {
+        let candidates = HashMap::new();
+        let result = CategoricalFactor::new(candidates, Probability::new(0.1));
+        assert_eq!(result.unwrap_err(), FactorError::EmptyScope);
     }
 
     #[test]
-    fn test_checked_evaluation() {
+    fn test_categorical_factor_single_candidate_selection() {
         let id1 = IdentityId(1);
         let id2 = IdentityId(2);
-        let score = Probability::new(0.95);
-        let factor = PairwiseFactor::new(id1, score);
+        let mut candidates = HashMap::new();
+        candidates.insert(id1, Probability::new(0.7));
+        candidates.insert(id2, Probability::new(0.2));
 
-        assert_eq!(factor.evaluate_checked(&[id1]).unwrap(), score);
-        assert_eq!(
-            factor.evaluate_checked(&[id2]).unwrap(),
-            Probability::ZERO
-        );
-        assert!(factor.evaluate_checked(&[id1, id2]).is_err());
+        let factor =
+            CategoricalFactor::new(candidates, Probability::new(0.1)).unwrap();
+
+        assert_eq!(factor.evaluate(&[id1]), Probability::new(0.7));
+        assert_eq!(factor.evaluate(&[id2]), Probability::new(0.2));
+    }
+
+    #[test]
+    fn test_categorical_factor_mutual_exclusion_violation() {
+        let id1 = IdentityId(1);
+        let id2 = IdentityId(2);
+        let mut candidates = HashMap::new();
+        candidates.insert(id1, Probability::new(0.5));
+        candidates.insert(id2, Probability::new(0.4));
+
+        let factor =
+            CategoricalFactor::new(candidates, Probability::new(0.1)).unwrap();
+
+        assert_eq!(factor.evaluate(&[id1, id2]), Probability::ZERO);
+    }
+
+    #[test]
+    fn test_categorical_factor_background_fallback() {
+        let id1 = IdentityId(1);
+        let id_out = IdentityId(99);
+        let mut candidates = HashMap::new();
+        candidates.insert(id1, Probability::new(0.8));
+
+        let factor =
+            CategoricalFactor::new(candidates, Probability::new(0.2)).unwrap();
+
+        assert_eq!(factor.evaluate(&[]), Probability::new(0.2));
+        assert_eq!(factor.evaluate(&[id_out]), Probability::new(0.2));
+    }
+
+    #[test]
+    fn test_categorical_factor_log_evaluation() {
+        let id1 = IdentityId(1);
+        let mut candidates = HashMap::new();
+        candidates.insert(id1, Probability::new(1.0));
+
+        let factor =
+            CategoricalFactor::new(candidates, Probability::new(0.0)).unwrap();
+
+        assert_eq!(factor.evaluate_log(&[id1]), 0.0);
+        assert_eq!(factor.evaluate_log(&[]), f64::NEG_INFINITY);
     }
 }

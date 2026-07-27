@@ -12,6 +12,6 @@ pub mod compatibility;
 pub mod compiler;
 pub mod factor;
 
-pub use compatibility::PairwiseCompatibility;
+pub use compatibility::{KCandidateDistribution, MultiCandidateCompatibility};
 pub use compiler::FactorCompiler;
-pub use factor::{Factor, FactorError, FactorScope, PairwiseFactor};
+pub use factor::{Factor, FactorError, FactorScope};
