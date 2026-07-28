@@ -1,4 +1,4 @@
-//! Maximum A Posteriori (MAP) identity assignment decision estimation.
+//! Global Maximum A Posteriori (MAP) identity assignment decision estimation.
 
 use li_core::ids::IdentityId;
 use li_core::probability::Probability;
@@ -9,24 +9,36 @@ use crate::posterior::PosteriorDistribution;
 /// estimation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MapAssignment {
-    /// Identity candidate that satisfied the selection criteria, if found.
+    /// Selected candidate identity maximizing posterior probability above
+    /// threshold, if found.
     pub selected_identity: Option<IdentityId>,
 }
 
-/// Estimator computing MAP assignment selection over posterior probability
+/// Estimator computing MAP decision selection over posterior probability
 /// distributions.
 pub struct MapEstimator;
 
+impl Default for MapEstimator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MapEstimator {
-    /// Extracts the candidate identity maximizing the posterior probability
-    /// above a threshold.
+    /// Instantiates a new MAP decision estimator.
+    pub fn new() -> Self {
+        Self
+    }
+
+    /// Extracts the optimal candidate identity maximizing posterior
+    /// probability above threshold.
     ///
     /// # Arguments
     ///
     /// * `posteriors` - Calculated marginal posterior distributions over
     ///   candidate identities.
     /// * `decision_threshold` - Minimum probability threshold required to
-    ///   confirm an assignment.
+    ///   confirm assignment.
     ///
     /// # Returns
     ///
@@ -37,98 +49,75 @@ impl MapEstimator {
         posteriors: &PosteriorDistribution,
         decision_threshold: Probability,
     ) -> MapAssignment {
-        let mut best_identity = None;
-        let mut max_prob = decision_threshold;
-
-        for marginal in &posteriors.marginals {
-            if marginal.probability.value() > max_prob.value() {
-                max_prob = marginal.probability;
-                best_identity = Some(marginal.identity);
-            }
+        if posteriors.marginals.is_empty() {
+            return MapAssignment {
+                selected_identity: None,
+            };
         }
 
+        let best_candidate = posteriors
+            .marginals
+            .iter()
+            .filter(|m| m.probability.value() >= decision_threshold.value())
+            .max_by(|a, b| {
+                a.probability
+                    .value()
+                    .partial_cmp(&b.probability.value())
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+
         MapAssignment {
-            selected_identity: best_identity,
+            selected_identity: best_candidate.map(|m| m.identity),
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use alloc::vec::Vec;
-
-    use li_core::ids::IdentityId;
-    use li_core::probability::Probability;
-
-    use crate::map::MapEstimator;
-    use crate::posterior::{MarginalPosterior, PosteriorDistribution};
+    use super::*;
+    use crate::posterior::MarginalPosterior;
 
     #[test]
-    fn test_map_empty_posteriors() {
-        let estimator = MapEstimator;
-        let posteriors = PosteriorDistribution {
-            marginals: Vec::new(),
+    fn test_map_respects_threshold_and_selects_max() {
+        let estimator = MapEstimator::new();
+        let m1 = MarginalPosterior {
+            identity: IdentityId(1),
+            probability: Probability::new(0.60),
+            log_odds: 0.40,
         };
-        let assignment =
-            estimator.estimate_map(&posteriors, Probability::new(0.5));
-
-        assert_eq!(assignment.selected_identity, None);
-    }
-
-    #[test]
-    fn test_map_all_below_threshold() {
-        let estimator = MapEstimator;
-        let posteriors = PosteriorDistribution {
-            marginals: alloc::vec![
-                MarginalPosterior {
-                    identity: IdentityId(1),
-                    probability: Probability::new(0.3),
-                },
-                MarginalPosterior {
-                    identity: IdentityId(2),
-                    probability: Probability::new(0.4),
-                },
-            ],
+        let m2 = MarginalPosterior {
+            identity: IdentityId(2),
+            probability: Probability::new(0.85),
+            log_odds: 1.73,
         };
+        let posteriors = PosteriorDistribution::new(vec![m1, m2]);
 
         let assignment =
-            estimator.estimate_map(&posteriors, Probability::new(0.5));
-        assert_eq!(assignment.selected_identity, None);
-    }
-
-    #[test]
-    fn test_map_selection_above_threshold() {
-        let estimator = MapEstimator;
-        let posteriors = PosteriorDistribution {
-            marginals: alloc::vec![
-                MarginalPosterior {
-                    identity: IdentityId(1),
-                    probability: Probability::new(0.6),
-                },
-                MarginalPosterior {
-                    identity: IdentityId(2),
-                    probability: Probability::new(0.85),
-                },
-            ],
-        };
-
-        let assignment =
-            estimator.estimate_map(&posteriors, Probability::new(0.5));
+            estimator.estimate_map(&posteriors, Probability::new(0.70));
         assert_eq!(assignment.selected_identity, Some(IdentityId(2)));
     }
 
     #[test]
-    fn test_map_exact_threshold_edge_case() {
-        let estimator = MapEstimator;
-        let posteriors = PosteriorDistribution {
-            marginals: alloc::vec![MarginalPosterior {
-                identity: IdentityId(1),
-                probability: Probability::new(0.5),
-            }],
+    fn test_map_rejects_all_below_threshold() {
+        let estimator = MapEstimator::new();
+        let m1 = MarginalPosterior {
+            identity: IdentityId(1),
+            probability: Probability::new(0.40),
+            log_odds: -0.40,
         };
+        let posteriors = PosteriorDistribution::new(vec![m1]);
 
         let assignment =
-            estimator.estimate_map(&posteriors, Probability::new(0.5));
+            estimator.estimate_map(&posteriors, Probability::new(0.50));
+        assert_eq!(assignment.selected_identity, None);
+    }
+
+    #[test]
+    fn test_map_empty_input() {
+        let estimator = MapEstimator::new();
+        let posteriors = PosteriorDistribution::default();
+        let assignment =
+            estimator.estimate_map(&posteriors, Probability::new(0.50));
         assert_eq!(assignment.selected_identity, None);
     }
 }

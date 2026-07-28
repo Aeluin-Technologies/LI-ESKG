@@ -1,40 +1,57 @@
-//! Bipartite factor graph representation linking assignment variables and
-//! potential factors.
-
-use alloc::boxed::Box;
-use alloc::vec::Vec;
+//! Bipartite factor graph representation with pre-computed adjacency positions
+//! for O(1) message passing.
 
 use li_core::ids::IdentityId;
 use li_factors::factor::Factor;
 
-/// Strongly-typed index referencing a variable node within a [`FactorGraph`].
+/// Index referencing a variable node within a [`FactorGraph`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct VarIndex(pub usize);
 
-/// Strongly-typed index referencing a factor node within a [`FactorGraph`].
+/// Index referencing a factor node within a [`FactorGraph`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FactorIndex(pub usize);
 
-/// Variable node representing a candidate identity assignment hypothesis.
+/// Variable node representing a candidate identity binary assignment.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VariableNode {
-    /// Unique index of this variable in the host factor graph.
+    /// Unique index of this variable node.
     pub id: VarIndex,
-    /// Identity candidate evaluating active or inactive state.
+    /// Candidate identity identifier evaluated by this node.
     pub candidate_identity: IdentityId,
+}
+
+/// Pre-computed adjacency connection from a variable node to a connected
+/// factor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VarEdge {
+    /// Connected factor index.
+    pub factor_idx: FactorIndex,
+    /// Index of this variable in the target factor's scope array.
+    pub pos_in_factor: usize,
+}
+
+/// Pre-computed adjacency connection from a factor node to a connected
+/// variable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FactorEdge {
+    /// Connected variable index.
+    pub var_idx: VarIndex,
+    /// Index of this factor in the target variable's connected factors array.
+    pub pos_in_var: usize,
 }
 
 /// Bipartite graph structuring dynamic assignment variables and connected
 /// factor potentials.
 pub struct FactorGraph {
-    /// List of variable nodes in the graph.
+    /// List of variable nodes contained in the graph.
     pub variables: Vec<VariableNode>,
-    /// List of evaluated factor potentials in the graph.
+    /// List of evaluated factor potentials contained in the graph.
     pub factors: Vec<Box<dyn Factor>>,
-    /// Mapping from variable node index to connected factor node indices.
-    pub var_to_factor: Vec<Vec<FactorIndex>>,
-    /// Mapping from factor node index to scope variable node indices.
-    pub factor_to_var: Vec<Vec<VarIndex>>,
+    /// Pre-indexed adjacencies from variables to connected factors.
+    pub var_adjacencies: Vec<Vec<VarEdge>>,
+    /// Pre-indexed adjacencies from factors to connected variables.
+    pub factor_adjacencies: Vec<Vec<FactorEdge>>,
 }
 
 impl Default for FactorGraph {
@@ -49,21 +66,35 @@ impl FactorGraph {
         Self {
             variables: Vec::new(),
             factors: Vec::new(),
-            var_to_factor: Vec::new(),
-            factor_to_var: Vec::new(),
+            var_adjacencies: Vec::new(),
+            factor_adjacencies: Vec::new(),
         }
     }
 
-    /// Adds a new assignment variable candidate to the factor graph.
+    /// Constructs an empty factor graph with pre-allocated memory capacity.
     ///
     /// # Arguments
     ///
-    /// * `candidate_identity` - The identity identifier associated with this
-    ///   variable node.
+    /// * `var_capacity` - Estimated number of variable nodes.
+    /// * `factor_capacity` - Estimated number of factor nodes.
+    pub fn with_capacity(var_capacity: usize, factor_capacity: usize) -> Self {
+        Self {
+            variables: Vec::with_capacity(var_capacity),
+            factors: Vec::with_capacity(factor_capacity),
+            var_adjacencies: Vec::with_capacity(var_capacity),
+            factor_adjacencies: Vec::with_capacity(factor_capacity),
+        }
+    }
+
+    /// Adds a candidate identity variable to the graph.
+    ///
+    /// # Arguments
+    ///
+    /// * `candidate_identity` - The target candidate identity.
     ///
     /// # Returns
     ///
-    /// The assigned [`VarIndex`] for the newly created variable node.
+    /// Assigned [`VarIndex`] for the variable.
     pub fn add_variable(
         &mut self,
         candidate_identity: IdentityId,
@@ -73,20 +104,21 @@ impl FactorGraph {
             id: idx,
             candidate_identity,
         });
-        self.var_to_factor.push(Vec::new());
+        self.var_adjacencies.push(Vec::with_capacity(4));
         idx
     }
 
-    /// Adds a potential factor node connected to a scope of variable nodes.
+    /// Connects a factor potential to a variable scope with pre-computed
+    /// adjacency offsets.
     ///
     /// # Arguments
     ///
-    /// * `factor` - Boxed implementation of the factor potential.
+    /// * `factor` - Boxed factor potential implementation.
     /// * `scopes` - Slice of variable indices governed by this factor.
     ///
     /// # Returns
     ///
-    /// The assigned [`FactorIndex`] for the newly added factor.
+    /// Assigned [`FactorIndex`] for the factor node.
     pub fn add_factor(
         &mut self,
         factor: Box<dyn Factor>,
@@ -95,79 +127,79 @@ impl FactorGraph {
         let f_idx = FactorIndex(self.factors.len());
         self.factors.push(factor);
 
-        let mut var_indices = Vec::with_capacity(scopes.len());
-        for &v_idx in scopes {
-            var_indices.push(v_idx);
-            self.var_to_factor[v_idx.0].push(f_idx);
+        let mut factor_edges = Vec::with_capacity(scopes.len());
+
+        for (pos_in_factor, &v_idx) in scopes.iter().enumerate() {
+            let pos_in_var = self.var_adjacencies[v_idx.0].len();
+
+            self.var_adjacencies[v_idx.0].push(VarEdge {
+                factor_idx: f_idx,
+                pos_in_factor,
+            });
+
+            factor_edges.push(FactorEdge {
+                var_idx: v_idx,
+                pos_in_var,
+            });
         }
-        self.factor_to_var.push(var_indices);
+
+        self.factor_adjacencies.push(factor_edges);
         f_idx
     }
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
-    use alloc::boxed::Box;
-    use alloc::vec::Vec;
-
-    use li_core::ids::IdentityId;
+mod tests {
     use li_core::probability::Probability;
-    use li_factors::factor::{Factor, FactorScope};
+    use li_factors::factor::FactorScope;
 
-    use crate::factor_graph::FactorGraph;
+    use super::*;
 
-    pub(crate) struct ConstantFactor {
-        pub scope_ids: Vec<IdentityId>,
-        pub value: f64,
+    #[derive(Debug)]
+    struct DummyFactor {
+        scope: Vec<IdentityId>,
     }
 
-    impl FactorScope for ConstantFactor {
+    impl FactorScope for DummyFactor {
         fn scope(&self) -> &[IdentityId] {
-            &self.scope_ids
+            &self.scope
         }
     }
 
-    impl Factor for ConstantFactor {
-        fn evaluate(&self, _assignment: &[IdentityId]) -> Probability {
-            Probability::new(self.value)
+    impl Factor for DummyFactor {
+        fn evaluate(&self, _assignments: &[IdentityId]) -> Probability {
+            Probability::new(1.0)
         }
     }
 
     #[test]
-    fn test_factor_graph_empty() {
-        let graph = FactorGraph::new();
-        assert_eq!(graph.variables.len(), 0);
-        assert_eq!(graph.factors.len(), 0);
-        assert_eq!(graph.var_to_factor.len(), 0);
-        assert_eq!(graph.factor_to_var.len(), 0);
+    fn test_precomputed_adjacency_offsets() {
+        let mut fg = FactorGraph::new();
+        let v0 = fg.add_variable(IdentityId(10));
+        let v1 = fg.add_variable(IdentityId(20));
+
+        let f0 = fg.add_factor(
+            Box::new(DummyFactor {
+                scope: vec![IdentityId(10), IdentityId(20)],
+            }),
+            &[v0, v1],
+        );
+
+        assert_eq!(fg.var_adjacencies[v0.0][0].factor_idx, f0);
+        assert_eq!(fg.var_adjacencies[v0.0][0].pos_in_factor, 0);
+        assert_eq!(fg.factor_adjacencies[f0.0][0].var_idx, v0);
+        assert_eq!(fg.factor_adjacencies[f0.0][0].pos_in_var, 0);
+
+        assert_eq!(fg.var_adjacencies[v1.0][0].factor_idx, f0);
+        assert_eq!(fg.var_adjacencies[v1.0][0].pos_in_factor, 1);
+        assert_eq!(fg.factor_adjacencies[f0.0][1].var_idx, v1);
+        assert_eq!(fg.factor_adjacencies[f0.0][1].pos_in_var, 0);
     }
 
     #[test]
-    fn test_factor_graph_add_variables_and_factors() {
-        let mut graph = FactorGraph::new();
-        let v0 = graph.add_variable(IdentityId(1));
-        let v1 = graph.add_variable(IdentityId(2));
-
-        let factor = Box::new(ConstantFactor {
-            scope_ids: alloc::vec![IdentityId(1), IdentityId(2)],
-            value: 1.0,
-        });
-
-        let f0 = graph.add_factor(factor, &[v0, v1]);
-
-        assert_eq!(v0.0, 0);
-        assert_eq!(v1.0, 1);
-        assert_eq!(f0.0, 0);
-        assert_eq!(graph.var_to_factor[0], alloc::vec![f0]);
-        assert_eq!(graph.var_to_factor[1], alloc::vec![f0]);
-        assert_eq!(graph.factor_to_var[0], alloc::vec![v0, v1]);
-    }
-
-    #[test]
-    fn test_factor_graph_disconnected_variable() {
-        let mut graph = FactorGraph::new();
-        let v0 = graph.add_variable(IdentityId(10));
-
-        assert_eq!(graph.var_to_factor[v0.0].len(), 0);
+    fn test_empty_graph_creation() {
+        let fg = FactorGraph::with_capacity(10, 10);
+        assert!(fg.variables.is_empty());
+        assert!(fg.factors.is_empty());
     }
 }
