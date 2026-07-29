@@ -21,3 +21,15 @@ The framework operates as an asynchronous, event-driven execution pipeline. It i
 Upstream perception frameworks stream observations into the engine. The runtime maps these inputs to an in-memory Active Workspace (Belief Layer) managed by an Entity Component System (ECS) architecture, condensing raw history into rolling statistical summaries $b_i = (\theta, \Sigma, \Lambda)$.
 
 For each observation, the engine compiles a temporary factor graph over local Markov blankets and runs the Sum-Product Belief Propagation algorithm to extract marginal posteriors. Maximum a posteriori (MAP) configurations are transformed into abstract `GraphOperation` batches emitted to external storage sinks, while active states are serialized into an embedded RocksDB instance.
+
+## Benchmarks
+
+Benchmarked on a M2 Apple chip.
+
+| Benchmark | Scale | Execution Time | Throughput |
+| :--- | :--- | :--- | :--- |
+| **Observation Partition** | 500,000 obs | 2.16 ms | 231.76 Melem/s |
+| **Identity Uniqueness** | 400,000 nodes | 2.30 ms | 173.77 Melem/s |
+| **Causal Acyclicity** | 300,000 rels | 3.95 ms | 76.05 Melem/s |
+| **Batch Insertion** | 1,000 items (in 1M pool) | 2.94 ms | 340.02 Kelem/s |
+| **Active Belief Query** | 1,000,000 items | 4.37 ms | 228.78 Melem/s |
