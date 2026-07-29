@@ -28,3 +28,7 @@ harness = false
 [[bench]]
 name = "workspace_bench"
 harness = false
+
+[[bench]]
+name = "model_benches"
+harness = false

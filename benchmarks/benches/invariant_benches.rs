@@ -18,6 +18,11 @@ use li_model::invariants::{
 };
 use li_model::operations::GraphOperation;
 
+/// Converts a benchmark identifier to a saturating timestamp scalar.
+fn timestamp_value(value: u64) -> i64 {
+    value.min(i64::MAX as u64) as i64
+}
+
 /// Generates a synthetic knowledge graph containing `num_entities` nodes
 /// and `obs_per_identity` observations per identity in a single pass.
 fn generate_bench_graph(
@@ -43,16 +48,12 @@ fn generate_bench_graph(
         });
         ops.push(GraphOperation::CommitEvent {
             id: event_id,
-            timestamp: Timestamp::from_millis(
-                idx.try_into().unwrap_or(i64::MAX),
-            ),
+            timestamp: Timestamp::from_millis(timestamp_value(idx)),
             payload: (),
         });
         ops.push(GraphOperation::CommitState {
             id: state_id,
-            timestamp: Timestamp::from_millis(
-                idx.try_into().unwrap_or(i64::MAX),
-            ),
+            timestamp: Timestamp::from_millis(timestamp_value(idx)),
             payload: (),
         });
 
@@ -72,9 +73,7 @@ fn generate_bench_graph(
             ops.push(GraphOperation::CommitObservation(Observation {
                 id: obs_id,
                 modality: Modality(1),
-                timestamp: Timestamp::from_millis(
-                    obs_id.0.try_into().unwrap_or(i64::MAX),
-                ),
+                timestamp: Timestamp::from_millis(timestamp_value(obs_id.0)),
                 confidence: Confidence::new(0.7),
                 payload: (),
             }));
@@ -88,9 +87,11 @@ fn generate_bench_graph(
         }
     }
 
-    store
-        .apply_batch(ops)
-        .expect("Failed to initialize benchmark graph store");
+    let initialization = store.apply_batch(ops);
+    assert!(
+        initialization.is_ok(),
+        "benchmark graph initialization failed: {initialization:?}"
+    );
     store
 }
 
@@ -100,13 +101,15 @@ fn bench_observation_partition(c: &mut Criterion) {
     group.measurement_time(Duration::from_secs(6));
     group.sample_size(10);
 
+    const OBSERVATIONS_PER_IDENTITY: u64 = 5;
     for &size in &[10_000, 50_000, 100_000] {
-        let graph = generate_bench_graph(size, 5);
+        let graph = generate_bench_graph(size, OBSERVATIONS_PER_IDENTITY);
         let invariant = ObservationPartitionInvariant;
+        let observation_count = size.saturating_mul(OBSERVATIONS_PER_IDENTITY);
 
-        group.throughput(Throughput::Elements(size));
+        group.throughput(Throughput::Elements(observation_count));
         group.bench_with_input(
-            BenchmarkId::new("observation", size),
+            BenchmarkId::new("observations", observation_count),
             &graph,
             |b, g| {
                 b.iter(|| black_box(invariant.verify(g)));
@@ -122,13 +125,15 @@ fn bench_identity_uniqueness(c: &mut Criterion) {
     group.measurement_time(Duration::from_secs(6));
     group.sample_size(10);
 
+    const OBSERVATIONS_PER_IDENTITY: u64 = 5;
     for &size in &[10_000, 50_000, 100_000] {
-        let graph = generate_bench_graph(size, 5);
+        let graph = generate_bench_graph(size, OBSERVATIONS_PER_IDENTITY);
         let invariant = IdentityUniquenessInvariant;
+        let node_count = size.saturating_mul(3 + OBSERVATIONS_PER_IDENTITY);
 
-        group.throughput(Throughput::Elements(size));
+        group.throughput(Throughput::Elements(node_count));
         group.bench_with_input(
-            BenchmarkId::new("uniqueness", size),
+            BenchmarkId::new("nodes", node_count),
             &graph,
             |b, g| {
                 b.iter(|| black_box(invariant.verify(g)));
@@ -144,13 +149,18 @@ fn bench_causal_acyclicity(c: &mut Criterion) {
     group.measurement_time(Duration::from_secs(8));
     group.sample_size(10);
 
+    const OBSERVATIONS_PER_IDENTITY: u64 = 5;
     for &size in &[10_000, 50_000, 100_000] {
-        let graph = generate_bench_graph(size, 5);
+        let graph = generate_bench_graph(size, OBSERVATIONS_PER_IDENTITY);
         let invariant = CausalAcyclicityInvariant;
+        let support_relations = size.saturating_mul(OBSERVATIONS_PER_IDENTITY);
+        let causal_relations = size.saturating_sub(1);
+        let relation_count =
+            support_relations.saturating_add(causal_relations);
 
-        group.throughput(Throughput::Elements(size));
+        group.throughput(Throughput::Elements(relation_count));
         group.bench_with_input(
-            BenchmarkId::new("acyclicit", size),
+            BenchmarkId::new("relations", relation_count),
             &graph,
             |b, g| {
                 b.iter(|| black_box(invariant.verify(g)));
