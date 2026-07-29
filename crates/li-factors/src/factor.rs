@@ -1,6 +1,6 @@
 //! Abstract potential function traits for factor graph scope evaluations.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use li_core::ids::IdentityId;
 use li_core::probability::Probability;
@@ -148,7 +148,8 @@ impl CategoricalFactor {
     /// let mut probs = HashMap::new();
     /// probs.insert(IdentityId(1), Probability::new(0.6));
     /// probs.insert(IdentityId(2), Probability::new(0.3));
-    /// let factor = CategoricalFactor::new(probs, Probability::new(0.1)).unwrap();
+    /// let factor = CategoricalFactor::new(probs, Probability::new(0.1));
+    /// assert!(factor.is_ok());
     /// ```
     pub fn new(
         candidates: HashMap<IdentityId, Probability>,
@@ -158,17 +159,7 @@ impl CategoricalFactor {
             return Err(FactorError::EmptyScope);
         }
 
-        let mut scope = Vec::with_capacity(candidates.len());
-        let mut seen = HashSet::with_capacity(candidates.len());
-
-        for &id in candidates.keys() {
-            if !seen.insert(id) {
-                return Err(FactorError::DuplicateScopeIdentity {
-                    identity_id: id,
-                });
-            }
-            scope.push(id);
-        }
+        let scope = candidates.keys().copied().collect();
 
         Ok(Self {
             scope,
@@ -193,16 +184,22 @@ impl FactorScope for CategoricalFactor {
 
 impl Factor for CategoricalFactor {
     fn evaluate(&self, assignment: &[IdentityId]) -> Probability {
-        let active_in_scope: Vec<IdentityId> = assignment
-            .iter()
-            .copied()
-            .filter(|id| self.candidate_probabilities.contains_key(id))
-            .collect();
+        let mut selected = None;
+        for identity in assignment {
+            let Some(probability) =
+                self.candidate_probabilities.get(identity).copied()
+            else {
+                continue;
+            };
+            if selected.is_some() {
+                return Probability::ZERO;
+            }
+            selected = Some(probability);
+        }
 
-        match active_in_scope.len() {
-            0 => self.background_probability,
-            1 => self.candidate_probabilities[&active_in_scope[0]],
-            _ => Probability::ZERO,
+        match selected {
+            Some(probability) => probability,
+            None => self.background_probability,
         }
     }
 }
@@ -215,11 +212,12 @@ mod tests {
     fn test_categorical_factor_empty_scope() {
         let candidates = HashMap::new();
         let result = CategoricalFactor::new(candidates, Probability::new(0.1));
-        assert_eq!(result.unwrap_err(), FactorError::EmptyScope);
+        assert_eq!(result.err(), Some(FactorError::EmptyScope));
     }
 
     #[test]
-    fn test_categorical_factor_single_candidate_selection() {
+    fn test_categorical_factor_single_candidate_selection()
+    -> Result<(), FactorError> {
         let id1 = IdentityId(1);
         let id2 = IdentityId(2);
         let mut candidates = HashMap::new();
@@ -227,14 +225,16 @@ mod tests {
         candidates.insert(id2, Probability::new(0.2));
 
         let factor =
-            CategoricalFactor::new(candidates, Probability::new(0.1)).unwrap();
+            CategoricalFactor::new(candidates, Probability::new(0.1))?;
 
         assert_eq!(factor.evaluate(&[id1]), Probability::new(0.7));
         assert_eq!(factor.evaluate(&[id2]), Probability::new(0.2));
+        Ok(())
     }
 
     #[test]
-    fn test_categorical_factor_mutual_exclusion_violation() {
+    fn test_categorical_factor_mutual_exclusion_violation()
+    -> Result<(), FactorError> {
         let id1 = IdentityId(1);
         let id2 = IdentityId(2);
         let mut candidates = HashMap::new();
@@ -242,35 +242,39 @@ mod tests {
         candidates.insert(id2, Probability::new(0.4));
 
         let factor =
-            CategoricalFactor::new(candidates, Probability::new(0.1)).unwrap();
+            CategoricalFactor::new(candidates, Probability::new(0.1))?;
 
         assert_eq!(factor.evaluate(&[id1, id2]), Probability::ZERO);
+        Ok(())
     }
 
     #[test]
-    fn test_categorical_factor_background_fallback() {
+    fn test_categorical_factor_background_fallback() -> Result<(), FactorError>
+    {
         let id1 = IdentityId(1);
         let id_out = IdentityId(99);
         let mut candidates = HashMap::new();
         candidates.insert(id1, Probability::new(0.8));
 
         let factor =
-            CategoricalFactor::new(candidates, Probability::new(0.2)).unwrap();
+            CategoricalFactor::new(candidates, Probability::new(0.2))?;
 
         assert_eq!(factor.evaluate(&[]), Probability::new(0.2));
         assert_eq!(factor.evaluate(&[id_out]), Probability::new(0.2));
+        Ok(())
     }
 
     #[test]
-    fn test_categorical_factor_log_evaluation() {
+    fn test_categorical_factor_log_evaluation() -> Result<(), FactorError> {
         let id1 = IdentityId(1);
         let mut candidates = HashMap::new();
         candidates.insert(id1, Probability::new(1.0));
 
         let factor =
-            CategoricalFactor::new(candidates, Probability::new(0.0)).unwrap();
+            CategoricalFactor::new(candidates, Probability::new(0.0))?;
 
         assert_eq!(factor.evaluate_log(&[id1]), 0.0);
         assert_eq!(factor.evaluate_log(&[]), f64::NEG_INFINITY);
+        Ok(())
     }
 }

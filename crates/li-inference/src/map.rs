@@ -3,7 +3,7 @@
 use li_core::ids::IdentityId;
 use li_core::probability::Probability;
 
-use crate::posterior::PosteriorDistribution;
+use crate::posterior::{MarginalPosterior, PosteriorDistribution};
 
 /// Optimal identity candidate assignment resulting from MAP decision
 /// estimation.
@@ -55,16 +55,23 @@ impl MapEstimator {
             };
         }
 
-        let best_candidate = posteriors
-            .marginals
-            .iter()
-            .filter(|m| m.probability.value() >= decision_threshold.value())
-            .max_by(|a, b| {
-                a.probability
-                    .value()
-                    .partial_cmp(&b.probability.value())
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            });
+        let mut best_candidate: Option<&MarginalPosterior> = None;
+        for marginal in &posteriors.marginals {
+            if marginal.probability.value() < decision_threshold.value() {
+                continue;
+            }
+            let replace = match best_candidate {
+                Some(best) => {
+                    marginal.probability.value() > best.probability.value() ||
+                        (marginal.probability == best.probability &&
+                            marginal.identity < best.identity)
+                },
+                None => true,
+            };
+            if replace {
+                best_candidate = Some(marginal);
+            }
+        }
 
         MapAssignment {
             selected_identity: best_candidate.map(|m| m.identity),
@@ -119,5 +126,26 @@ mod tests {
         let assignment =
             estimator.estimate_map(&posteriors, Probability::new(0.50));
         assert_eq!(assignment.selected_identity, None);
+    }
+
+    #[test]
+    fn test_map_breaks_probability_ties_by_identity() {
+        let estimator = MapEstimator::new();
+        let posteriors = PosteriorDistribution::new(vec![
+            MarginalPosterior {
+                identity: IdentityId(9),
+                probability: Probability::new(0.8),
+                log_odds: 1.0,
+            },
+            MarginalPosterior {
+                identity: IdentityId(3),
+                probability: Probability::new(0.8),
+                log_odds: 1.0,
+            },
+        ]);
+
+        let assignment =
+            estimator.estimate_map(&posteriors, Probability::new(0.5));
+        assert_eq!(assignment.selected_identity, Some(IdentityId(3)));
     }
 }

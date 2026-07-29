@@ -76,6 +76,36 @@ pub trait MultiCandidateCompatibility<P, S>: Send + Sync {
         observation: &Observation<P>,
         beliefs: &[&BeliefState<S>],
     ) -> KCandidateDistribution;
+
+    /// Streams joint candidate probabilities without requiring an output map.
+    ///
+    /// Implementations on latency-sensitive paths should override this method
+    /// and emit normalized scores directly. The default implementation keeps
+    /// existing evaluators compatible by materializing
+    /// [`KCandidateDistribution`].
+    ///
+    /// # Arguments
+    ///
+    /// * `observation` - Incoming observation payload.
+    /// * `beliefs` - Active candidate belief states.
+    /// * `emit` - Callback invoked once for each candidate probability.
+    ///
+    /// # Returns
+    ///
+    /// The normalized background/unassigned probability.
+    fn evaluate_joint_stream(
+        &self,
+        observation: &Observation<P>,
+        beliefs: &[&BeliefState<S>],
+        emit: &mut dyn FnMut(IdentityId, Probability),
+    ) -> Probability {
+        let distribution = self.evaluate_joint(observation, beliefs);
+        let background = distribution.background();
+        for (&identity, probability) in distribution.candidates() {
+            emit(identity, *probability);
+        }
+        background
+    }
 }
 
 #[cfg(test)]

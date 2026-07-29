@@ -116,7 +116,7 @@ where
         let mut active_beliefs = Vec::with_capacity(evidence.candidates.len());
         for &candidate_id in &evidence.candidates {
             if let Some(belief) = workspace.get(candidate_id) {
-                active_beliefs.push(belief.clone());
+                active_beliefs.push(belief);
             }
         }
 

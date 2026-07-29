@@ -39,6 +39,27 @@ pub trait ActiveWorkspace {
         ttl_microseconds: i64,
     ) -> Vec<BeliefState<Self::Summary>>;
 
+    /// Removes expired beliefs into a caller-owned reusable buffer.
+    ///
+    /// Implementations should override this method when they can fill
+    /// `output` directly. The default preserves compatibility but may allocate
+    /// a temporary vector through [`Self::evict_expired`].
+    ///
+    /// # Arguments
+    ///
+    /// * `current_time` - Timestamp used as the expiration baseline.
+    /// * `ttl_microseconds` - Strict time-to-live threshold in microseconds.
+    /// * `output` - Buffer cleared before evicted beliefs are appended.
+    fn evict_expired_into(
+        &mut self,
+        current_time: Timestamp,
+        ttl_microseconds: i64,
+        output: &mut Vec<BeliefState<Self::Summary>>,
+    ) {
+        output.clear();
+        output.extend(self.evict_expired(current_time, ttl_microseconds));
+    }
+
     /// Instantiates a snapshot of the current active belief layer.
     fn create_snapshot(
         &self,

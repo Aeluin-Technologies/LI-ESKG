@@ -10,7 +10,9 @@ use li_core::probability::{Confidence, Probability};
 use li_factors::compatibility::{
     KCandidateDistribution, MultiCandidateCompatibility,
 };
-use li_factors::factor::{CategoricalFactor, Factor, FactorScope};
+use li_factors::factor::{
+    CategoricalFactor, Factor, FactorError, FactorScope,
+};
 
 /// Modality-specific spatial measurement payload.
 #[derive(Clone, Debug)]
@@ -70,6 +72,24 @@ pub struct UserSpatialEvaluator {
     pub background_prob: Probability,
 }
 
+impl UserSpatialEvaluator {
+    fn probability(
+        &self,
+        observation: &Observation<CustomSpatialPayload>,
+        belief: &BeliefState<CustomSummaryState>,
+    ) -> Probability {
+        let dx = observation.payload.x - belief.summary.last_x;
+        let dy = observation.payload.y - belief.summary.last_y;
+        let distance = dx.hypot(dy);
+
+        if distance > self.max_distance {
+            Probability::ZERO
+        } else {
+            Probability::new(1.0 - (distance / self.max_distance))
+        }
+    }
+}
+
 impl MultiCandidateCompatibility<CustomSpatialPayload, CustomSummaryState>
     for UserSpatialEvaluator
 {
@@ -81,24 +101,29 @@ impl MultiCandidateCompatibility<CustomSpatialPayload, CustomSummaryState>
         let mut candidate_probs = HashMap::with_capacity(beliefs.len());
 
         for belief in beliefs {
-            let dx = observation.payload.x - belief.summary.last_x;
-            let dy = observation.payload.y - belief.summary.last_y;
-            let dist = (dx * dx + dy * dy).sqrt();
-
-            let prob = if dist > self.max_distance {
-                Probability::new(0.0)
-            } else {
-                Probability::new(1.0 - (dist / self.max_distance))
-            };
-
-            candidate_probs.insert(belief.identity, prob);
+            candidate_probs.insert(
+                belief.identity,
+                self.probability(observation, belief),
+            );
         }
 
         KCandidateDistribution::new(candidate_probs, self.background_prob)
     }
+
+    fn evaluate_joint_stream(
+        &self,
+        observation: &Observation<CustomSpatialPayload>,
+        beliefs: &[&BeliefState<CustomSummaryState>],
+        emit: &mut dyn FnMut(IdentityId, Probability),
+    ) -> Probability {
+        for belief in beliefs {
+            emit(belief.identity, self.probability(observation, belief));
+        }
+        self.background_prob
+    }
 }
 
-fn main() {
+fn main() -> Result<(), FactorError> {
     let evaluator = UserSpatialEvaluator {
         max_distance: 100.0,
         background_prob: Probability::new(0.05),
@@ -137,8 +162,7 @@ fn main() {
     let distribution = evaluator.evaluate_joint(&obs, &candidate_beliefs);
     let (candidate_probs, bg_prob) = distribution.into_parts();
 
-    let factor = CategoricalFactor::new(candidate_probs, bg_prob)
-        .expect("Failed to initialize categorical factor");
+    let factor = CategoricalFactor::new(candidate_probs, bg_prob)?;
 
     let score_a = factor.evaluate(&[belief_a.identity]);
     let score_b = factor.evaluate(&[belief_b.identity]);
@@ -161,4 +185,5 @@ fn main() {
     );
 
     assert!(score_a.value() > score_b.value());
+    Ok(())
 }

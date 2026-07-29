@@ -103,6 +103,25 @@ impl BeliefPropagationSolver {
         if num_vars == 0 {
             return PosteriorDistribution::default();
         }
+        if num_factors == 0 {
+            let marginals = graph
+                .variables
+                .iter()
+                .map(|variable| MarginalPosterior {
+                    identity: variable.candidate_identity,
+                    probability: Probability::new(0.5),
+                    log_odds: 0.0,
+                })
+                .collect();
+            return PosteriorDistribution::new(marginals);
+        }
+        if graph
+            .factor_adjacencies
+            .iter()
+            .all(|adjacencies| adjacencies.len() == 1)
+        {
+            return Self::solve_unary_factors(graph);
+        }
 
         let mut var_to_factor_msg: Vec<Vec<[f64; 2]>> = graph
             .var_adjacencies
@@ -275,6 +294,44 @@ impl BeliefPropagationSolver {
 
         PosteriorDistribution::new(marginals)
     }
+
+    /// Solves independent unary factors directly in one linear pass.
+    ///
+    /// Unary factors have no neighboring variables to marginalize, so their
+    /// log-potentials can be accumulated without allocating message buffers or
+    /// entering the iterative solver.
+    fn solve_unary_factors(graph: &FactorGraph) -> PosteriorDistribution {
+        let mut marginals = Vec::with_capacity(graph.variables.len());
+
+        for (variable_index, variable) in graph.variables.iter().enumerate() {
+            let mut log_score = [0.0, 0.0];
+            for edge in &graph.var_adjacencies[variable_index] {
+                let factor = &graph.factors[edge.factor_idx.0];
+                log_score[0] += factor.evaluate(&[]).value().max(1e-12).ln();
+                log_score[1] += factor
+                    .evaluate(core::slice::from_ref(
+                        &variable.candidate_identity,
+                    ))
+                    .value()
+                    .max(1e-12)
+                    .ln();
+            }
+
+            let log_z = Self::log_sum_exp(&log_score);
+            let probability = if log_z == f64::NEG_INFINITY {
+                Probability::ZERO
+            } else {
+                Probability::new((log_score[1] - log_z).exp())
+            };
+            marginals.push(MarginalPosterior {
+                identity: variable.candidate_identity,
+                probability,
+                log_odds: log_score[1] - log_score[0],
+            });
+        }
+
+        PosteriorDistribution::new(marginals)
+    }
 }
 
 #[cfg(test)]
@@ -334,7 +391,80 @@ mod tests {
         let solver = BeliefPropagationSolver::new(BpConfig::default());
         let posteriors = solver.solve(&fg);
 
-        let marginal = posteriors.find_marginal(id).unwrap();
-        assert!((marginal.probability.value() - 0.9).abs() < 1e-2);
+        let probability = posteriors
+            .find_marginal(id)
+            .map(|marginal| marginal.probability.value());
+        assert!(probability.is_some_and(|value| (value - 0.9).abs() < 1e-2));
+    }
+
+    #[test]
+    fn test_bp_without_factors_returns_uniform_marginals() {
+        let mut graph = FactorGraph::with_capacity(2, 0);
+        graph.add_variable(IdentityId(20));
+        graph.add_variable(IdentityId(10));
+
+        let posteriors =
+            BeliefPropagationSolver::new(BpConfig::default()).solve(&graph);
+
+        assert_eq!(posteriors.marginals.len(), 2);
+        for marginal in &posteriors.marginals {
+            assert_eq!(marginal.probability, Probability::new(0.5));
+            assert_eq!(marginal.log_odds, 0.0);
+        }
+    }
+
+    #[test]
+    fn test_bp_combines_multiple_unary_factors_exactly() {
+        struct UnaryFactor {
+            identity: IdentityId,
+            inactive: Probability,
+            active: Probability,
+        }
+
+        impl li_factors::factor::FactorScope for UnaryFactor {
+            fn scope(&self) -> &[IdentityId] {
+                core::slice::from_ref(&self.identity)
+            }
+        }
+
+        impl li_factors::factor::Factor for UnaryFactor {
+            fn evaluate(&self, assignments: &[IdentityId]) -> Probability {
+                if assignments.contains(&self.identity) {
+                    self.active
+                } else {
+                    self.inactive
+                }
+            }
+        }
+
+        let identity = IdentityId(7);
+        let mut graph = FactorGraph::new();
+        let variable = graph.add_variable(identity);
+        graph.add_factor(
+            Box::new(UnaryFactor {
+                identity,
+                inactive: Probability::new(0.2),
+                active: Probability::new(0.8),
+            }),
+            &[variable],
+        );
+        graph.add_factor(
+            Box::new(UnaryFactor {
+                identity,
+                inactive: Probability::new(0.4),
+                active: Probability::new(0.6),
+            }),
+            &[variable],
+        );
+
+        let posteriors =
+            BeliefPropagationSolver::new(BpConfig::default()).solve(&graph);
+        let probability = posteriors
+            .find_marginal(identity)
+            .map(|marginal| marginal.probability.value());
+
+        assert!(probability.is_some_and(|value| {
+            (value - (0.48 / (0.48 + 0.08))).abs() < 1e-12
+        }));
     }
 }

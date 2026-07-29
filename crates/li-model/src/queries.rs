@@ -15,72 +15,84 @@ use crate::ontology::NodeData;
 pub trait SupportSetQuery<P> {
     /// Recovers references to all empirical observations supporting an
     /// identity.
-    fn query_support_set(&self, identity: IdentityId) -> Vec<&Observation<P>>;
+    fn query_support_set<'a>(
+        &'a self,
+        identity: IdentityId,
+    ) -> impl Iterator<Item = &'a Observation<P>>
+    where
+        P: 'a;
 }
 
 impl<P, E, S> SupportSetQuery<P> for PetGraphStore<P, E, S> {
-    fn query_support_set(&self, identity: IdentityId) -> Vec<&Observation<P>> {
+    fn query_support_set<'a>(
+        &'a self,
+        identity: IdentityId,
+    ) -> impl Iterator<Item = &'a Observation<P>>
+    where
+        P: 'a,
+    {
         let target_vertex = Vertex::Identity(identity);
-        let target_idx = match self.index_map.get(&target_vertex) {
-            Some(idx) => *idx,
-            None => return Vec::new(),
-        };
-
-        let mut support = Vec::new();
-        for edge in self
-            .raw_graph
-            .edges_directed(target_idx, Direction::Incoming)
-        {
-            if edge.weight().relation == Relation::Supports &&
-                let NodeData::Observation(obs) =
-                    &self.raw_graph[edge.source()]
-            {
-                support.push(obs);
-            }
-        }
-        support
+        self.index_map
+            .get(&target_vertex)
+            .into_iter()
+            .flat_map(|&target_idx| {
+                self.raw_graph
+                    .edges_directed(target_idx, Direction::Incoming)
+            })
+            .filter_map(|edge| {
+                if edge.weight().relation != Relation::Supports {
+                    return None;
+                }
+                match &self.raw_graph[edge.source()] {
+                    NodeData::Observation(observation) => Some(observation),
+                    _ => None,
+                }
+            })
     }
 }
 
 /// Outgoing topological boundary query.
 pub trait NeighborhoodQuery {
     /// Recovers all outgoing directed relations from a source vertex.
-    fn out_edges(&self, vertex: Vertex) -> Vec<(Vertex, Relation, Vertex)>;
+    fn out_edges(
+        &self,
+        vertex: Vertex,
+    ) -> impl Iterator<Item = (Vertex, Relation, Vertex)>;
 }
 
 impl<P, E, S> NeighborhoodQuery for PetGraphStore<P, E, S> {
-    fn out_edges(&self, vertex: Vertex) -> Vec<(Vertex, Relation, Vertex)> {
-        let src_idx = match self.index_map.get(&vertex) {
-            Some(idx) => *idx,
-            None => return Vec::new(),
-        };
-
-        let mut edges = Vec::new();
-        for edge in self.raw_graph.edges_directed(src_idx, Direction::Outgoing)
-        {
-            let tgt_vertex = self.raw_graph[edge.target()].vertex();
-            // NOTE: this clones `u64`.
-            edges.push((vertex, edge.weight().relation, tgt_vertex));
-        }
-        edges
+    fn out_edges(
+        &self,
+        vertex: Vertex,
+    ) -> impl Iterator<Item = (Vertex, Relation, Vertex)> {
+        self.index_map
+            .get(&vertex)
+            .into_iter()
+            .flat_map(|&source| {
+                self.raw_graph.edges_directed(source, Direction::Outgoing)
+            })
+            .map(move |edge| {
+                (
+                    vertex,
+                    edge.weight().relation,
+                    self.raw_graph[edge.target()].vertex(),
+                )
+            })
     }
 }
 
 /// Query listing active identities in the graph.
 pub trait IdentitySetQuery {
     /// Returns all allocated identity identifiers.
-    fn all_identities(&self) -> Vec<IdentityId>;
+    fn all_identities(&self) -> impl Iterator<Item = IdentityId>;
 }
 
 impl<P, E, S> IdentitySetQuery for PetGraphStore<P, E, S> {
-    fn all_identities(&self) -> Vec<IdentityId> {
-        self.index_map
-            .keys()
-            .filter_map(|v| match v {
-                Vertex::Identity(id) => Some(*id),
-                _ => None,
-            })
-            .collect()
+    fn all_identities(&self) -> impl Iterator<Item = IdentityId> {
+        self.raw_graph.node_weights().filter_map(|node| match node {
+            NodeData::Identity { id, .. } => Some(*id),
+            _ => None,
+        })
     }
 }
 
@@ -99,8 +111,7 @@ mod tests {
     #[test]
     fn test_zero_copy_identity_set_query_empty() {
         let store = PetGraphStore::<(), (), ()>::new();
-        let identities = IdentitySetQuery::all_identities(&store);
-        assert!(identities.is_empty());
+        assert_eq!(IdentitySetQuery::all_identities(&store).count(), 0);
     }
 
     #[test]
@@ -118,17 +129,20 @@ mod tests {
         ];
         assert!(store.apply_batch(ops).is_ok());
 
-        let mut identities = IdentitySetQuery::all_identities(&store);
-        identities.sort();
+        let mut identities: Vec<_> =
+            IdentitySetQuery::all_identities(&store).collect();
+        identities.sort_unstable();
         assert_eq!(identities, vec![IdentityId(1), IdentityId(2)]);
     }
 
     #[test]
     fn test_zero_copy_support_set_query_unregistered_identity() {
         let store = PetGraphStore::<(), (), ()>::new();
-        let support =
-            SupportSetQuery::query_support_set(&store, IdentityId(999));
-        assert!(support.is_empty());
+        assert_eq!(
+            SupportSetQuery::query_support_set(&store, IdentityId(999))
+                .count(),
+            0
+        );
     }
 
     #[test]
@@ -171,11 +185,57 @@ mod tests {
         ];
         assert!(store.apply_batch(ops).is_ok());
 
-        let support =
-            SupportSetQuery::query_support_set(&store, IdentityId(1));
+        let support: Vec<_> =
+            SupportSetQuery::query_support_set(&store, IdentityId(1))
+                .collect();
         assert_eq!(support.len(), 2);
         let mut obs_ids: Vec<_> = support.iter().map(|o| o.id).collect();
         obs_ids.sort();
         assert_eq!(obs_ids, vec![ObservationId(1), ObservationId(2)]);
+    }
+
+    #[test]
+    fn test_zero_copy_neighborhood_query_reports_outgoing_relations() {
+        let timestamp = Timestamp::from_secs(100);
+        let mut store = PetGraphStore::<(), (), ()>::new();
+        let operations = [
+            GraphOperation::CommitIdentity {
+                id: IdentityId(1),
+                created_at: timestamp,
+            },
+            GraphOperation::CommitIdentity {
+                id: IdentityId(2),
+                created_at: timestamp,
+            },
+            GraphOperation::CommitRelation {
+                source: Vertex::Identity(IdentityId(1)),
+                relation: Relation::AssociatedWith,
+                target: Vertex::Identity(IdentityId(2)),
+                created_at: timestamp,
+            },
+        ];
+        assert!(store.apply_batch(operations).is_ok());
+
+        let edges: Vec<_> = NeighborhoodQuery::out_edges(
+            &store,
+            Vertex::Identity(IdentityId(1)),
+        )
+        .collect();
+        assert_eq!(
+            edges,
+            vec![(
+                Vertex::Identity(IdentityId(1)),
+                Relation::AssociatedWith,
+                Vertex::Identity(IdentityId(2)),
+            )]
+        );
+        assert_eq!(
+            NeighborhoodQuery::out_edges(
+                &store,
+                Vertex::Identity(IdentityId(999)),
+            )
+            .count(),
+            0
+        );
     }
 }

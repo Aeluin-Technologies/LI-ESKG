@@ -13,8 +13,15 @@ pub mod projection;
 pub mod queries;
 pub mod spatial;
 
-pub use graph::{GraphError, KnowledgeGraph, PetGraphStore};
+pub use graph::{
+    GraphError, KnowledgeGraph, MergeOutcome, PetGraphStore, RawGraph,
+};
+pub use invariants::{Invariant, InvariantViolation};
 pub use ontology::{EdgeData, NodeData};
-pub use operations::GraphOperation;
-pub use projection::{EventStateGraph, EventStateProjection, GraphProjection};
-pub use spatial::{GeoPoint, SpatialComponent};
+pub use operations::{GraphOperation, IdentityAssignment};
+pub use projection::{
+    EventStateGraph, EventStateNode, EventStateProjection, GraphProjection,
+};
+pub use spatial::{
+    Covariance2D, GeoPoint, SpatialComponent, SpatialError, SpatialGaussian2D,
+};

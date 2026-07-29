@@ -51,11 +51,36 @@ impl<P, E, S> NodeData<P, E, S> {
 /// Persistent directed edge payload storing the semantic relation type and
 /// timestamp.
 #[derive(
-    Serialize, Deserialize, Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash,
+    Serialize,
+    Deserialize,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
 )]
 pub struct EdgeData {
     /// Semantic edge classification.
     pub relation: Relation,
     /// Temporal marker when the edge was established.
     pub created_at: Timestamp,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn edge_data_is_copy() {
+        let edge = EdgeData {
+            relation: Relation::Supports,
+            created_at: Timestamp::from_secs(1),
+        };
+        let copied = edge;
+
+        assert_eq!(edge, copied);
+    }
 }

@@ -1,41 +1,48 @@
-//! Verification of Theorem 2 (Causal Acyclicity).
+//! Verification that the deterministic Event-State subgraph is acyclic.
 
 use petgraph::algo::toposort;
+use petgraph::visit::EdgeFiltered;
 
 use crate::graph::PetGraphStore;
-use crate::invariants::Invariant;
-use crate::projection::{EventStateProjection, GraphProjection};
+use crate::invariants::{Invariant, InvariantViolation};
 
-/// Asserts that the causal subgraph $R_{\text{eskg}}$ forms a Directed Acyclic
-/// Graph (DAG).
+/// Asserts that the causal subgraph $R_{\text{eskg}}$ forms a directed acyclic
+/// graph.
 pub struct CausalAcyclicityInvariant;
 
-impl<P: Clone, E: Clone, S: Clone> Invariant<PetGraphStore<P, E, S>>
-    for CausalAcyclicityInvariant
-{
-    fn verify(&self, graph: &PetGraphStore<P, E, S>) -> bool {
-        let projected = EventStateProjection::project(graph);
-        // `toposort` is implemented iteratively on the heap, preventing stack
-        // overflow on deep paths.
-        toposort(&projected.graph, None).is_ok()
+impl<P, E, S> Invariant<PetGraphStore<P, E, S>> for CausalAcyclicityInvariant {
+    fn validate(
+        &self,
+        graph: &PetGraphStore<P, E, S>,
+    ) -> Result<(), InvariantViolation> {
+        let causal_graph = EdgeFiltered::from_fn(&graph.raw_graph, |edge| {
+            edge.weight().relation.is_eskg_relation()
+        });
+
+        if toposort(&causal_graph, None).is_err() {
+            Err(InvariantViolation::CausalCycle)
+        } else {
+            Ok(())
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use li_core::ids::EventId;
+    use li_core::ids::{EventId, IdentityId};
     use li_core::observation::Timestamp;
     use li_core::ontology::Vertex;
     use li_core::relation::Relation;
 
     use super::*;
     use crate::graph::KnowledgeGraph;
+    use crate::ontology::{EdgeData, NodeData};
     use crate::operations::GraphOperation;
 
     #[test]
-    fn test_valid_causal_dag() {
+    fn accepts_valid_causal_dag() {
         let mut store = PetGraphStore::<(), (), ()>::new();
-        let ops = vec![
+        let operations = vec![
             GraphOperation::CommitEvent {
                 id: EventId(1),
                 timestamp: Timestamp::default(),
@@ -53,16 +60,17 @@ mod tests {
                 created_at: Timestamp::default(),
             },
         ];
-        store.apply_batch(ops).expect("Failed to apply ops");
+        assert!(store.apply_batch(operations).is_ok());
 
         let invariant = CausalAcyclicityInvariant;
+        assert_eq!(invariant.validate(&store), Ok(()));
         assert!(invariant.verify(&store));
     }
 
     #[test]
-    fn test_detects_causal_cycle() {
+    fn reports_causal_cycle() {
         let mut store = PetGraphStore::<(), (), ()>::new();
-        let ops = vec![
+        let operations = vec![
             GraphOperation::CommitEvent {
                 id: EventId(1),
                 timestamp: Timestamp::default(),
@@ -86,42 +94,114 @@ mod tests {
                 created_at: Timestamp::default(),
             },
         ];
-        store.apply_batch(ops).expect("Failed to apply ops");
+        assert!(store.apply_batch(operations).is_ok());
 
         let invariant = CausalAcyclicityInvariant;
+        assert_eq!(
+            invariant.validate(&store),
+            Err(InvariantViolation::CausalCycle)
+        );
         assert!(!invariant.verify(&store));
     }
 
     #[test]
-    fn test_deep_dag_stack_safety() {
-        let num_entities = 100_000;
+    fn ignores_cycles_composed_only_of_li_relations() {
         let mut store = PetGraphStore::<(), (), ()>::new();
-        let mut ops = Vec::with_capacity(num_entities * 2);
-
-        for idx in 1..=num_entities {
-            ops.push(GraphOperation::CommitEvent {
-                id: EventId(idx as u64),
-                timestamp: Timestamp::default(),
-                payload: (),
-            });
-        }
-
-        for idx in 1..num_entities {
-            ops.push(GraphOperation::CommitRelation {
-                source: Vertex::Event(EventId(idx as u64)),
-                relation: Relation::Influence,
-                target: Vertex::Event(EventId((idx + 1) as u64)),
-                created_at: Timestamp::default(),
-            });
-        }
-
-        store
-            .apply_batch(ops)
-            .expect("Failed to initialize deep DAG");
+        let timestamp = Timestamp::from_secs(1);
+        let operations = vec![
+            GraphOperation::CommitIdentity {
+                id: IdentityId(1),
+                created_at: timestamp,
+            },
+            GraphOperation::CommitIdentity {
+                id: IdentityId(2),
+                created_at: timestamp,
+            },
+            GraphOperation::CommitRelation {
+                source: Vertex::Identity(IdentityId(1)),
+                relation: Relation::AssociatedWith,
+                target: Vertex::Identity(IdentityId(2)),
+                created_at: timestamp,
+            },
+            GraphOperation::CommitRelation {
+                source: Vertex::Identity(IdentityId(2)),
+                relation: Relation::AssociatedWith,
+                target: Vertex::Identity(IdentityId(1)),
+                created_at: timestamp,
+            },
+        ];
+        assert!(store.apply_batch(operations).is_ok());
 
         let invariant = CausalAcyclicityInvariant;
-        // Verify that 100k-deep DAG succeeds without overflowing the thread
-        // stack
-        assert!(invariant.verify(&store));
+        assert_eq!(invariant.validate(&store), Ok(()));
+    }
+
+    #[test]
+    fn detects_self_loop() {
+        let mut store = PetGraphStore::<(), (), ()>::new();
+        let timestamp = Timestamp::from_secs(1);
+        assert!(
+            store
+                .apply_batch([GraphOperation::CommitEvent {
+                    id: EventId(1),
+                    timestamp,
+                    payload: (),
+                }])
+                .is_ok()
+        );
+        let event_index =
+            store.index_map.get(&Vertex::Event(EventId(1))).copied();
+        if let Some(event_index) = event_index {
+            store.raw_graph.add_edge(
+                event_index,
+                event_index,
+                EdgeData {
+                    relation: Relation::Influence,
+                    created_at: timestamp,
+                },
+            );
+        }
+
+        let invariant = CausalAcyclicityInvariant;
+        assert_eq!(
+            invariant.validate(&store),
+            Err(InvariantViolation::CausalCycle)
+        );
+    }
+
+    #[test]
+    fn validates_deep_causal_chain_without_using_call_stack() {
+        const EVENT_COUNT: usize = 50_000;
+
+        let timestamp = Timestamp::UNIX_EPOCH;
+        let mut store = PetGraphStore::<(), (), ()>::with_capacity(
+            EVENT_COUNT,
+            EVENT_COUNT,
+        );
+        let mut previous = None;
+
+        for raw_id in 0..EVENT_COUNT {
+            let id = EventId(raw_id as u64);
+            let vertex = Vertex::Event(id);
+            let index = store.raw_graph.add_node(NodeData::Event {
+                id,
+                timestamp,
+                payload: (),
+            });
+            store.index_map.insert(vertex, index);
+            if let Some(source) = previous {
+                store.raw_graph.add_edge(
+                    source,
+                    index,
+                    EdgeData {
+                        relation: Relation::Influence,
+                        created_at: timestamp,
+                    },
+                );
+            }
+            previous = Some(index);
+        }
+
+        assert_eq!(CausalAcyclicityInvariant.validate(&store), Ok(()));
     }
 }

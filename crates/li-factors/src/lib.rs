@@ -13,5 +13,5 @@ pub mod compiler;
 pub mod factor;
 
 pub use compatibility::{KCandidateDistribution, MultiCandidateCompatibility};
-pub use compiler::FactorCompiler;
+pub use compiler::{DirectMapDecision, FactorCompiler};
 pub use factor::{Factor, FactorError, FactorScope};
