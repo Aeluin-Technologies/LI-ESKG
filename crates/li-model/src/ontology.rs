@@ -1,45 +1,86 @@
-//! Formal node and edge schema definitions for the persistent graph layer.
+//! Formal node and edge payload representations encapsulated within petgraph
+//! storage.
 
-use li_core::ids::{EventId, IdentityId, StateId, VertexId};
-use li_core::observation::Timestamp;
+use li_core::ids::{EventId, IdentityId, StateId};
+use li_core::observation::{Observation, Timestamp};
+use li_core::ontology::Vertex;
 use li_core::relation::Relation;
 use serde::{Deserialize, Serialize};
 
-/// Persistent record of a resolved latent identity node.
-/// Represents the node $i \in I$ inside the graph topology.
-#[derive(Deserialize, Serialize, Debug, Clone, PartialEq, Eq)]
-pub struct IdentityNode {
-    pub id: IdentityId,
-    pub created_at: Timestamp,
+/// Encapsulates heterogeneous vertex payloads directly within petgraph nodes.
+#[derive(Debug, Clone, PartialEq)]
+pub enum NodeData<P, E, S> {
+    /// Empirical observation node ($O$).
+    Observation(Observation<P>),
+    /// Latent identity hypothesis node ($I$).
+    Identity {
+        id: IdentityId,
+        created_at: Timestamp,
+    },
+    /// Causal event occurrence node ($E$).
+    Event {
+        id: EventId,
+        timestamp: Timestamp,
+        payload: E,
+    },
+    /// Entity state snapshot node ($S$).
+    State {
+        id: StateId,
+        timestamp: Timestamp,
+        payload: S,
+    },
 }
 
-/// Persistent record of a causal event occurrence node.
-/// Represents the node $e \in E$ driving state transitions.
-#[derive(Deserialize, Serialize, Debug, Clone, PartialEq, Eq)]
-pub struct EventNode<E> {
-    pub id: EventId,
-    pub timestamp: Timestamp,
-    pub payload: E,
+impl<P, E, S> NodeData<P, E, S> {
+    /// Resolves the domain typed `Vertex` enum corresponding to this node.
+    pub fn vertex(&self) -> Vertex {
+        match self {
+            Self::Observation(obs) => Vertex::Observation(obs.id),
+            Self::Identity { id, .. } => Vertex::Identity(*id),
+            Self::Event { id, .. } => Vertex::Event(*id),
+            Self::State { id, .. } => Vertex::State(*id),
+        }
+    }
+
+    /// Extracts the raw underlying numeric ID value.
+    pub fn raw_id(&self) -> u64 {
+        self.vertex().raw_id()
+    }
 }
 
-/// Persistent record of an entity state node.
-/// Represents the node $s \in S$ mapping historical intervals.
-#[derive(Deserialize, Serialize, Debug, Clone, PartialEq, Eq)]
-pub struct StateNode<S> {
-    pub id: StateId,
-    pub timestamp: Timestamp,
-    pub payload: S,
-}
-
-/// Historic, directed semantic relation between two vertices.
-/// Defines the tuple $(v_1, \text{relation}, v_2) \in R$ at a specific point
-/// in time.
+/// Persistent directed edge payload storing the semantic relation type and
+/// timestamp.
 #[derive(
-    Deserialize, Serialize, Debug, Clone, PartialEq, Eq, PartialOrd, Ord,
+    Serialize,
+    Deserialize,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
 )]
-pub struct Edge {
-    pub source: VertexId,
+pub struct EdgeData {
+    /// Semantic edge classification.
     pub relation: Relation,
-    pub target: VertexId,
+    /// Temporal marker when the edge was established.
     pub created_at: Timestamp,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn edge_data_is_copy() {
+        let edge = EdgeData {
+            relation: Relation::Supports,
+            created_at: Timestamp::from_secs(1),
+        };
+        let copied = edge;
+
+        assert_eq!(edge, copied);
+    }
 }

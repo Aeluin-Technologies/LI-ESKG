@@ -1,212 +1,288 @@
-//! Verification of Theorem 4 (Observation Partition).
+//! Verification that identity support sets partition all observations.
 
-use alloc::vec::Vec;
-use core::ops::Deref;
-
-use li_core::ids::VertexId;
+use li_core::ontology::Vertex;
 use li_core::relation::Relation;
-use rayon::prelude::*;
+use petgraph::Direction;
+use petgraph::visit::{EdgeRef, IntoEdgeReferences};
 
-use crate::graph::KnowledgeGraph;
-use crate::invariants::Invariant;
-use crate::ontology::Edge;
-use crate::queries::{IdentitySetQuery, NeighborhoodQuery, SupportSetQuery};
+use crate::graph::PetGraphStore;
+use crate::invariants::{Invariant, InvariantViolation};
+use crate::ontology::NodeData;
 
-/// Asserts that the support sets of active identities form a strict partition
-/// of the active observation space.
+/// Asserts that every observation supports exactly one identity and every
+/// identity has a non-empty support set.
 pub struct ObservationPartitionInvariant;
 
-impl<G> Invariant<G> for ObservationPartitionInvariant
-where
-    G: KnowledgeGraph
-        + NeighborhoodQuery
-        + IdentitySetQuery
-        + SupportSetQuery
-        + Sync,
-    for<'a> <G as NeighborhoodQuery>::EdgeRef<'a>: Deref<Target = Edge>,
+impl<P, E, S> Invariant<PetGraphStore<P, E, S>>
+    for ObservationPartitionInvariant
 {
-    /// Evaluates partition properties by inspecting active identity support
-    /// sets in parallel and tracking cross-boundary uniqueness constraints.
-    fn verify(&self, graph: &G) -> bool {
-        let active_identities = IdentitySetQuery::all_identities(graph);
-        let local_results: Option<Vec<Vec<_>>> = active_identities
-            .into_par_iter()
-            .map(|id| {
-                let support = SupportSetQuery::query_support_set(graph, id);
+    fn validate(
+        &self,
+        store: &PetGraphStore<P, E, S>,
+    ) -> Result<(), InvariantViolation> {
+        for edge in store.raw_graph.edge_references() {
+            if edge.weight().relation != Relation::Supports {
+                continue;
+            }
 
-                if support.is_empty() {
-                    return None;
-                }
+            let source = store.raw_graph[edge.source()].vertex();
+            let target = store.raw_graph[edge.target()].vertex();
+            if !matches!(source, Vertex::Observation(_)) ||
+                !matches!(target, Vertex::Identity(_))
+            {
+                return Err(InvariantViolation::InvalidSupportEndpoints {
+                    origin: source,
+                    target,
+                });
+            }
+        }
 
-                let mut local_obs_ids = Vec::with_capacity(support.len());
-
-                for obs in support {
-                    let vid = VertexId(obs.id.0);
-                    let out_edges = NeighborhoodQuery::out_edges(graph, vid);
-                    let mut supports_relation_count = 0;
-
-                    for edge_ref in out_edges {
-                        let edge: &Edge = edge_ref.deref();
-                        if edge.relation == Relation::Supports {
-                            supports_relation_count += 1;
-                            if edge.target != VertexId(id.0) {
-                                return None;
-                            }
-                        }
+        for node_index in store.raw_graph.node_indices() {
+            match &store.raw_graph[node_index] {
+                NodeData::Observation(observation) => {
+                    let actual = store
+                        .raw_graph
+                        .edges_directed(node_index, Direction::Outgoing)
+                        .filter(|edge| {
+                            edge.weight().relation == Relation::Supports
+                        })
+                        .count();
+                    if actual != 1 {
+                        return Err(
+                            InvariantViolation::ObservationSupportCardinality {
+                                observation: observation.id,
+                                actual,
+                            },
+                        );
                     }
-
-                    if supports_relation_count != 1 {
-                        return None;
+                },
+                NodeData::Identity { id, .. } => {
+                    let actual = store
+                        .raw_graph
+                        .edges_directed(node_index, Direction::Incoming)
+                        .filter(|edge| {
+                            edge.weight().relation == Relation::Supports
+                        })
+                        .count();
+                    if actual == 0 {
+                        return Err(
+                            InvariantViolation::IdentitySupportCardinality {
+                                identity: *id,
+                                actual,
+                            },
+                        );
                     }
+                },
+                NodeData::Event { .. } | NodeData::State { .. } => {},
+            }
+        }
 
-                    local_obs_ids.push(obs.id);
-                }
-
-                Some(local_obs_ids)
-            })
-            .collect();
-
-        let obs_lists: Vec<Vec<_>> = match local_results {
-            Some(lists) => lists,
-            None => return false,
-        };
-
-        let mut all_obs_ids: Vec<_> =
-            obs_lists.into_iter().flatten().collect();
-        all_obs_ids.par_sort_unstable();
-
-        let has_duplicates = all_obs_ids.par_windows(2).any(|w| w[0] == w[1]);
-        !has_duplicates
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use li_core::IdentityId;
-    use li_core::ids::ObservationId;
+    use li_core::ids::{IdentityId, ObservationId};
     use li_core::observation::{Modality, Observation, Timestamp};
     use li_core::probability::Confidence;
 
     use super::*;
-    use crate::memory::MemoryGraph;
-    use crate::ontology::IdentityNode;
+    use crate::graph::KnowledgeGraph;
+    use crate::ontology::EdgeData;
     use crate::operations::GraphOperation;
 
-    fn create_observation(id: u64) -> Observation<()> {
-        Observation {
-            id: ObservationId(id),
-            modality: Modality(1),
-            timestamp: Timestamp(0),
-            confidence: Confidence(0.7),
-            payload: (),
+    fn observation(id: u64) -> Observation<()> {
+        Observation::new(
+            ObservationId(id),
+            Modality(1),
+            Timestamp::from_secs(id as i64),
+            Confidence::new(1.0),
+            (),
+        )
+    }
+
+    #[test]
+    fn accepts_empty_graph() {
+        let store = PetGraphStore::<(), (), ()>::new();
+        let invariant = ObservationPartitionInvariant;
+
+        assert_eq!(invariant.validate(&store), Ok(()));
+    }
+
+    #[test]
+    fn accepts_disjoint_complete_support_sets() {
+        let timestamp = Timestamp::from_secs(10);
+        let mut store = PetGraphStore::<(), (), ()>::new();
+        let operations = vec![
+            GraphOperation::CommitObservation(observation(1)),
+            GraphOperation::CommitObservation(observation(2)),
+            GraphOperation::CommitIdentity {
+                id: IdentityId(1),
+                created_at: timestamp,
+            },
+            GraphOperation::CommitIdentity {
+                id: IdentityId(2),
+                created_at: timestamp,
+            },
+            GraphOperation::CommitRelation {
+                source: Vertex::Observation(ObservationId(1)),
+                relation: Relation::Supports,
+                target: Vertex::Identity(IdentityId(1)),
+                created_at: timestamp,
+            },
+            GraphOperation::CommitRelation {
+                source: Vertex::Observation(ObservationId(2)),
+                relation: Relation::Supports,
+                target: Vertex::Identity(IdentityId(2)),
+                created_at: timestamp,
+            },
+        ];
+        assert!(store.apply_batch(operations).is_ok());
+
+        let invariant = ObservationPartitionInvariant;
+        assert_eq!(invariant.validate(&store), Ok(()));
+        assert!(invariant.verify(&store));
+    }
+
+    #[test]
+    fn reports_observation_without_support() {
+        let mut store = PetGraphStore::<(), (), ()>::new();
+        assert!(
+            store
+                .apply_batch([GraphOperation::CommitObservation(observation(
+                    1
+                ))])
+                .is_ok()
+        );
+
+        let invariant = ObservationPartitionInvariant;
+        assert_eq!(
+            invariant.validate(&store),
+            Err(InvariantViolation::ObservationSupportCardinality {
+                observation: ObservationId(1),
+                actual: 0,
+            })
+        );
+    }
+
+    #[test]
+    fn reports_identity_without_support() {
+        let mut store = PetGraphStore::<(), (), ()>::new();
+        assert!(
+            store
+                .apply_batch([GraphOperation::CommitIdentity {
+                    id: IdentityId(1),
+                    created_at: Timestamp::from_secs(1),
+                }])
+                .is_ok()
+        );
+
+        let invariant = ObservationPartitionInvariant;
+        assert_eq!(
+            invariant.validate(&store),
+            Err(InvariantViolation::IdentitySupportCardinality {
+                identity: IdentityId(1),
+                actual: 0,
+            })
+        );
+    }
+
+    #[test]
+    fn reports_observation_supporting_multiple_identities() {
+        let timestamp = Timestamp::from_secs(10);
+        let mut store = PetGraphStore::<(), (), ()>::new();
+        let operations = vec![
+            GraphOperation::CommitObservation(observation(1)),
+            GraphOperation::CommitIdentity {
+                id: IdentityId(1),
+                created_at: timestamp,
+            },
+            GraphOperation::CommitIdentity {
+                id: IdentityId(2),
+                created_at: timestamp,
+            },
+            GraphOperation::CommitRelation {
+                source: Vertex::Observation(ObservationId(1)),
+                relation: Relation::Supports,
+                target: Vertex::Identity(IdentityId(1)),
+                created_at: timestamp,
+            },
+        ];
+        assert!(store.apply_batch(operations).is_ok());
+        let observation_index = store
+            .index_map
+            .get(&Vertex::Observation(ObservationId(1)))
+            .copied();
+        let second_identity_index = store
+            .index_map
+            .get(&Vertex::Identity(IdentityId(2)))
+            .copied();
+        if let (Some(observation_index), Some(second_identity_index)) =
+            (observation_index, second_identity_index)
+        {
+            store.raw_graph.add_edge(
+                observation_index,
+                second_identity_index,
+                EdgeData {
+                    relation: Relation::Supports,
+                    created_at: timestamp,
+                },
+            );
         }
+
+        let invariant = ObservationPartitionInvariant;
+        assert_eq!(
+            invariant.validate(&store),
+            Err(InvariantViolation::ObservationSupportCardinality {
+                observation: ObservationId(1),
+                actual: 2,
+            })
+        );
     }
 
     #[test]
-    fn test_empty_graph_passes_vacuously() {
-        let graph: MemoryGraph<(), (), ()> = MemoryGraph::new();
-        assert!(ObservationPartitionInvariant.verify(&graph));
-    }
+    fn reports_invalid_support_endpoints_in_raw_graph() {
+        let timestamp = Timestamp::from_secs(1);
+        let mut store = PetGraphStore::<(), (), ()>::new();
+        let operations = [
+            GraphOperation::CommitIdentity {
+                id: IdentityId(1),
+                created_at: timestamp,
+            },
+            GraphOperation::CommitIdentity {
+                id: IdentityId(2),
+                created_at: timestamp,
+            },
+        ];
+        assert!(store.apply_batch(operations).is_ok());
 
-    #[test]
-    fn test_perfect_disjoint_partition_passes() {
-        let mut graph: MemoryGraph<(), (), ()> = MemoryGraph::new();
-        let id_a = IdentityId(10);
-        let id_b = IdentityId(20);
-        let obs_1 = create_observation(1);
-        let obs_2 = create_observation(2);
+        let source = store
+            .index_map
+            .get(&Vertex::Identity(IdentityId(1)))
+            .copied();
+        let target = store
+            .index_map
+            .get(&Vertex::Identity(IdentityId(2)))
+            .copied();
+        if let (Some(source), Some(target)) = (source, target) {
+            store.raw_graph.add_edge(
+                source,
+                target,
+                EdgeData {
+                    relation: Relation::Supports,
+                    created_at: timestamp,
+                },
+            );
+        }
 
-        graph.apply(GraphOperation::CommitIdentity(IdentityNode {
-            id: id_a,
-            created_at: Timestamp(0),
-        }));
-        graph.apply(GraphOperation::CommitIdentity(IdentityNode {
-            id: id_b,
-            created_at: Timestamp(0),
-        }));
-        graph.apply(GraphOperation::CommitObservation(obs_1.clone()));
-        graph.apply(GraphOperation::CommitObservation(obs_2.clone()));
-
-        graph.apply(GraphOperation::CommitRelation {
-            source: VertexId(obs_1.id.0),
-            relation: Relation::Supports,
-            target: VertexId(id_a.0),
-            created_at: Timestamp(0),
-        });
-        graph.apply(GraphOperation::CommitRelation {
-            source: VertexId(obs_2.id.0),
-            relation: Relation::Supports,
-            target: VertexId(id_b.0),
-            created_at: Timestamp(0),
-        });
-
-        assert!(ObservationPartitionInvariant.verify(&graph));
-    }
-
-    #[test]
-    fn test_empty_identity_support_set_fails() {
-        let mut graph: MemoryGraph<(), (), ()> = MemoryGraph::new();
-        let id_a = IdentityId(10);
-        graph.apply(GraphOperation::CommitIdentity(IdentityNode {
-            id: id_a,
-            created_at: Timestamp(0),
-        }));
-
-        assert!(!ObservationPartitionInvariant.verify(&graph));
-    }
-
-    #[test]
-    fn test_shared_observation_across_identities_fails() {
-        let mut graph: MemoryGraph<(), (), ()> = MemoryGraph::new();
-        let id_a = IdentityId(10);
-        let id_b = IdentityId(20);
-        let shared_obs = create_observation(100);
-
-        graph.apply(GraphOperation::CommitIdentity(IdentityNode {
-            id: id_a,
-            created_at: Timestamp(0),
-        }));
-        graph.apply(GraphOperation::CommitIdentity(IdentityNode {
-            id: id_b,
-            created_at: Timestamp(0),
-        }));
-        graph.apply(GraphOperation::CommitObservation(shared_obs.clone()));
-
-        graph.apply(GraphOperation::CommitRelation {
-            source: VertexId(shared_obs.id.0),
-            relation: Relation::Supports,
-            target: VertexId(id_a.0),
-            created_at: Timestamp(0),
-        });
-        graph.apply(GraphOperation::CommitRelation {
-            source: VertexId(shared_obs.id.0),
-            relation: Relation::Supports,
-            target: VertexId(id_b.0),
-            created_at: Timestamp(0),
-        });
-
-        assert!(!ObservationPartitionInvariant.verify(&graph));
-    }
-
-    #[test]
-    fn test_mismatched_edge_target_fails() {
-        let mut graph: MemoryGraph<(), (), ()> = MemoryGraph::new();
-        let id_a = IdentityId(10);
-        let obs = create_observation(1);
-
-        graph.apply(GraphOperation::CommitIdentity(IdentityNode {
-            id: id_a,
-            created_at: Timestamp(0),
-        }));
-        graph.apply(GraphOperation::CommitObservation(obs.clone()));
-
-        graph.apply(GraphOperation::CommitRelation {
-            source: VertexId(obs.id.0),
-            relation: Relation::Supports,
-            target: VertexId(999),
-            created_at: Timestamp(0),
-        });
-
-        assert!(!ObservationPartitionInvariant.verify(&graph));
+        let invariant = ObservationPartitionInvariant;
+        assert_eq!(
+            invariant.validate(&store),
+            Err(InvariantViolation::InvalidSupportEndpoints {
+                origin: Vertex::Identity(IdentityId(1)),
+                target: Vertex::Identity(IdentityId(2)),
+            })
+        );
     }
 }

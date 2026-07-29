@@ -5,5 +5,7 @@ edition = "2024"
 
 [dependencies]
 li-core = { path = "../li-core", version = "0.1.0" }
-rayon = "1"
-serde = { version = "1", features = ["derive", "alloc"] }
+petgraph = "0.8.3"
+smallvec = "1.15"
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"

@@ -27,6 +27,7 @@ impl<S> EvictionPolicy<S> for TemporalEvictionPolicy {
         current_time: Timestamp,
         ttl_microseconds: i64,
     ) -> bool {
-        current_time.0 - belief.last_update.0 > ttl_microseconds
+        current_time.as_micros() - belief.last_update.as_micros() >
+            ttl_microseconds
     }
 }

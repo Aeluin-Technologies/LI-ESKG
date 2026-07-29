@@ -9,4 +9,7 @@ li-workspace = { path = "../li-workspace" }
 li-factors = { path = "../li-factors" }
 li-inference = { path = "../li-inference" }
 li-model = { path = "../li-model" }
-li-storage = { path = "../li-storage" }
+smallvec = "1.15"
+
+[dev-dependencies]
+chrono = "0.4"

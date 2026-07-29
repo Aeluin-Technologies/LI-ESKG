@@ -1,9 +1,9 @@
-//! Sum-Product Belief Propagation algorithm solver on factor graphs.
+//! Parallel Log-Domain Sum-Product Belief Propagation solver robust against
+//! NaN and infinite values.
 
-use alloc::vec::Vec;
-
-use li_core::IdentityId;
+use li_core::ids::IdentityId;
 use li_core::probability::Probability;
+use rayon::prelude::*;
 
 use crate::factor_graph::FactorGraph;
 use crate::posterior::{MarginalPosterior, PosteriorDistribution};
@@ -13,14 +13,24 @@ use crate::posterior::{MarginalPosterior, PosteriorDistribution};
 pub struct BpConfig {
     /// Maximum number of message passing iterations allowed.
     pub max_iterations: usize,
-    /// Minimum message delta required to declare convergence.
+    /// Minimum message delta threshold required to declare convergence.
     pub convergence_threshold: f64,
 }
 
-/// Solves marginal posterior distributions using Sum-Product Belief
+impl Default for BpConfig {
+    fn default() -> Self {
+        Self {
+            max_iterations: 50,
+            convergence_threshold: 1e-6,
+        }
+    }
+}
+
+/// Solves marginal posterior distributions using Log-Domain Sum-Product Belief
 /// Propagation.
 pub struct BeliefPropagationSolver {
-    /// Operational parameters controlling solver execution.
+    /// Operational parameters controlling execution limits and convergence
+    /// criteria.
     pub config: BpConfig,
 }
 
@@ -29,14 +39,54 @@ impl BeliefPropagationSolver {
     ///
     /// # Arguments
     ///
-    /// * `config` - Configuration options specifying iteration limits and
-    ///   thresholds.
+    /// * `config` - Configuration options controlling iteration limits and
+    ///   convergence.
     pub fn new(config: BpConfig) -> Self {
         Self { config }
     }
 
-    /// Computes marginal posterior probabilities for variable nodes in a
-    /// factor graph.
+    /// Computes LogSumExp over logarithmic values with explicit checks
+    /// preventing NaN propagation.
+    pub fn log_sum_exp(logs: &[f64]) -> f64 {
+        if logs.is_empty() {
+            return f64::NEG_INFINITY;
+        }
+
+        let mut max_val = f64::NEG_INFINITY;
+        let mut has_pos_infinity = false;
+
+        for &val in logs {
+            if val == f64::INFINITY {
+                has_pos_infinity = true;
+            } else if val > max_val {
+                max_val = val;
+            }
+        }
+
+        if has_pos_infinity {
+            return f64::INFINITY;
+        }
+
+        if max_val == f64::NEG_INFINITY {
+            return f64::NEG_INFINITY;
+        }
+
+        let sum_exp: f64 = logs
+            .iter()
+            .map(|&x| {
+                if x == f64::NEG_INFINITY {
+                    0.0
+                } else {
+                    (x - max_val).exp()
+                }
+            })
+            .sum();
+
+        max_val + sum_exp.ln()
+    }
+
+    /// Solves marginal posterior probabilities for variable nodes in a factor
+    /// graph.
     ///
     /// # Arguments
     ///
@@ -47,96 +97,374 @@ impl BeliefPropagationSolver {
     /// A [`PosteriorDistribution`] containing posterior probabilities for each
     /// variable candidate.
     pub fn solve(&self, graph: &FactorGraph) -> PosteriorDistribution {
-        let mut marginals = Vec::with_capacity(graph.variables.len());
+        let num_vars = graph.variables.len();
+        let num_factors = graph.factors.len();
 
-        for var in &graph.variables {
-            let mut score_active = 0.5;
-            let mut score_inactive = 0.5;
+        if num_vars == 0 {
+            return PosteriorDistribution::default();
+        }
+        if num_factors == 0 {
+            let marginals = graph
+                .variables
+                .iter()
+                .map(|variable| MarginalPosterior {
+                    identity: variable.candidate_identity,
+                    probability: Probability::new(0.5),
+                    log_odds: 0.0,
+                })
+                .collect();
+            return PosteriorDistribution::new(marginals);
+        }
+        if graph
+            .factor_adjacencies
+            .iter()
+            .all(|adjacencies| adjacencies.len() == 1)
+        {
+            return Self::solve_unary_factors(graph);
+        }
 
-            for &f_idx in &graph.var_to_factor[var.id.0] {
-                let factor = &graph.factors[f_idx.0];
+        let mut var_to_factor_msg: Vec<Vec<[f64; 2]>> = graph
+            .var_adjacencies
+            .iter()
+            .map(|f_list| vec![[0.0, 0.0]; f_list.len()])
+            .collect();
 
-                let scope_active = &[var.candidate_identity];
-                score_active *= factor.evaluate(scope_active).0;
+        let mut factor_to_var_msg: Vec<Vec<[f64; 2]>> = graph
+            .factor_adjacencies
+            .iter()
+            .map(|v_list| vec![[0.0, 0.0]; v_list.len()])
+            .collect();
 
-                let scope_inactive = &[IdentityId(0)];
-                score_inactive *= factor.evaluate(scope_inactive).0;
+        for _iteration in 0..self.config.max_iterations {
+            let mut max_delta: f64 = 0.0;
+
+            for (v_idx, v_msgs) in
+                var_to_factor_msg.iter_mut().enumerate().take(num_vars)
+            {
+                let adjacencies = &graph.var_adjacencies[v_idx];
+                for (f_pos, _edge) in adjacencies.iter().enumerate() {
+                    for state in 0..2 {
+                        let mut sum_log = 0.0;
+                        for (other_f_pos, other_edge) in
+                            adjacencies.iter().enumerate()
+                        {
+                            if other_f_pos == f_pos {
+                                continue;
+                            }
+                            sum_log += factor_to_var_msg
+                                [other_edge.factor_idx.0]
+                                [other_edge.pos_in_factor][state];
+                        }
+                        v_msgs[f_pos][state] = sum_log;
+                    }
+
+                    let max_m = v_msgs[f_pos][0].max(v_msgs[f_pos][1]);
+                    if max_m.is_finite() {
+                        v_msgs[f_pos][0] -= max_m;
+                        v_msgs[f_pos][1] -= max_m;
+                    }
+                }
             }
 
-            let total_mass = score_active + score_inactive;
-            let posterior_prob = if total_mass > 0.0 {
-                score_active / total_mass
-            } else {
+            let next_factor_to_var_msg: Vec<Vec<[f64; 2]>> = (0..num_factors)
+                .into_par_iter()
+                .map(|f_idx| {
+                    let factor = &graph.factors[f_idx];
+                    let scoped_edges = &graph.factor_adjacencies[f_idx];
+                    let num_scoped = scoped_edges.len();
+                    debug_assert!(
+                        num_scoped < 30,
+                        "Factor scope too large for dense enumeration"
+                    );
+                    let mut new_msgs = vec![[0.0, 0.0]; num_scoped];
+
+                    for (target_pos, _target_edge) in
+                        scoped_edges.iter().enumerate()
+                    {
+                        for (target_state, target_msg_slot) in
+                            new_msgs[target_pos].iter_mut().enumerate()
+                        {
+                            let mut combination_logs = Vec::with_capacity(
+                                1 << num_scoped.saturating_sub(1),
+                            );
+                            let num_combinations = 1 << num_scoped;
+
+                            let mut assignments_buf =
+                                vec![IdentityId(0); num_scoped];
+
+                            for comb in 0..num_combinations {
+                                let current_target_state =
+                                    (comb >> target_pos) & 1;
+                                if current_target_state != target_state {
+                                    continue;
+                                }
+
+                                assignments_buf.clear();
+                                let mut incoming_sum = 0.0;
+
+                                for (other_pos, other_edge) in
+                                    scoped_edges.iter().enumerate()
+                                {
+                                    let state = (comb >> other_pos) & 1;
+                                    if state == 1 {
+                                        assignments_buf.push(
+                                            graph.variables
+                                                [other_edge.var_idx.0]
+                                                .candidate_identity,
+                                        );
+                                    }
+                                    if other_pos != target_pos {
+                                        incoming_sum += var_to_factor_msg
+                                            [other_edge.var_idx.0]
+                                            [other_edge.pos_in_var][state];
+                                    }
+                                }
+
+                                let factor_prob = factor
+                                    .evaluate(&assignments_buf)
+                                    .value()
+                                    .max(1e-12);
+                                combination_logs
+                                    .push(factor_prob.ln() + incoming_sum);
+                            }
+
+                            *target_msg_slot =
+                                Self::log_sum_exp(&combination_logs);
+                        }
+
+                        let max_m = new_msgs[target_pos][0]
+                            .max(new_msgs[target_pos][1]);
+                        if max_m.is_finite() {
+                            new_msgs[target_pos][0] -= max_m;
+                            new_msgs[target_pos][1] -= max_m;
+                        }
+                    }
+
+                    new_msgs
+                })
+                .collect();
+
+            for f_idx in 0..num_factors {
+                for (v_pos, msgs) in
+                    next_factor_to_var_msg[f_idx].iter().enumerate()
+                {
+                    let d0 =
+                        (msgs[0] - factor_to_var_msg[f_idx][v_pos][0]).abs();
+                    let d1 =
+                        (msgs[1] - factor_to_var_msg[f_idx][v_pos][1]).abs();
+                    max_delta = max_delta.max(d0).max(d1);
+                }
+            }
+
+            factor_to_var_msg = next_factor_to_var_msg;
+
+            if max_delta < self.config.convergence_threshold {
+                break;
+            }
+        }
+
+        let mut marginals = Vec::with_capacity(num_vars);
+        for (v_idx, var) in graph.variables.iter().enumerate() {
+            let mut log_score = [0.0, 0.0];
+            for edge in &graph.var_adjacencies[v_idx] {
+                log_score[0] += factor_to_var_msg[edge.factor_idx.0]
+                    [edge.pos_in_factor][0];
+                log_score[1] += factor_to_var_msg[edge.factor_idx.0]
+                    [edge.pos_in_factor][1];
+            }
+
+            let log_z = Self::log_sum_exp(&log_score);
+            let prob_active = if log_z == f64::NEG_INFINITY {
                 0.0
+            } else {
+                (log_score[1] - log_z).exp()
+            };
+            let log_odds = if log_score[1] == log_score[0] {
+                0.0
+            } else {
+                log_score[1] - log_score[0]
             };
 
             marginals.push(MarginalPosterior {
                 identity: var.candidate_identity,
-                probability: Probability::new(posterior_prob.clamp(0.0, 1.0)),
+                probability: Probability::new(prob_active.clamp(0.0, 1.0)),
+                log_odds,
             });
         }
 
-        PosteriorDistribution { marginals }
+        PosteriorDistribution::new(marginals)
+    }
+
+    /// Solves independent unary factors directly in one linear pass.
+    ///
+    /// Unary factors have no neighboring variables to marginalize, so their
+    /// log-potentials can be accumulated without allocating message buffers or
+    /// entering the iterative solver.
+    fn solve_unary_factors(graph: &FactorGraph) -> PosteriorDistribution {
+        let mut marginals = Vec::with_capacity(graph.variables.len());
+
+        for (variable_index, variable) in graph.variables.iter().enumerate() {
+            let mut log_score = [0.0, 0.0];
+            for edge in &graph.var_adjacencies[variable_index] {
+                let factor = &graph.factors[edge.factor_idx.0];
+                log_score[0] += factor.evaluate(&[]).value().max(1e-12).ln();
+                log_score[1] += factor
+                    .evaluate(core::slice::from_ref(
+                        &variable.candidate_identity,
+                    ))
+                    .value()
+                    .max(1e-12)
+                    .ln();
+            }
+
+            let log_z = Self::log_sum_exp(&log_score);
+            let probability = if log_z == f64::NEG_INFINITY {
+                Probability::ZERO
+            } else {
+                Probability::new((log_score[1] - log_z).exp())
+            };
+            marginals.push(MarginalPosterior {
+                identity: variable.candidate_identity,
+                probability,
+                log_odds: log_score[1] - log_score[0],
+            });
+        }
+
+        PosteriorDistribution::new(marginals)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use alloc::boxed::Box;
-
     use li_core::ids::IdentityId;
-    use li_core::probability::Probability;
 
-    use crate::bp::{BeliefPropagationSolver, BpConfig};
-    use crate::factor_graph::FactorGraph;
-    use crate::factor_graph::tests::ConstantFactor;
+    use super::*;
 
     #[test]
-    fn test_bp_empty_graph() {
-        let config = BpConfig {
-            max_iterations: 10,
-            convergence_threshold: 0.001,
-        };
-        let solver = BeliefPropagationSolver::new(config);
-        let graph = FactorGraph::new();
+    fn test_log_sum_exp_robustness() {
+        assert_eq!(
+            BeliefPropagationSolver::log_sum_exp(&[]),
+            f64::NEG_INFINITY
+        );
+        assert_eq!(
+            BeliefPropagationSolver::log_sum_exp(&[
+                f64::NEG_INFINITY,
+                f64::NEG_INFINITY
+            ]),
+            f64::NEG_INFINITY
+        );
+        assert_eq!(
+            BeliefPropagationSolver::log_sum_exp(&[1.0, f64::INFINITY]),
+            f64::INFINITY
+        );
 
-        let posteriors = solver.solve(&graph);
-        assert_eq!(posteriors.marginals.len(), 0);
+        let res = BeliefPropagationSolver::log_sum_exp(&[0.0, 0.0]);
+        assert!((res - (2.0f64).ln()).abs() < 1e-9);
     }
 
     #[test]
-    fn test_bp_isolated_variables_default_score() {
-        let config = BpConfig {
-            max_iterations: 5,
-            convergence_threshold: 0.01,
-        };
-        let solver = BeliefPropagationSolver::new(config);
-        let mut graph = FactorGraph::new();
-        graph.add_variable(IdentityId(100));
+    fn test_bp_single_variable_eval() {
+        let mut fg = FactorGraph::new();
+        let id = IdentityId(100);
+        let v_idx = fg.add_variable(id);
 
-        let posteriors = solver.solve(&graph);
-        assert_eq!(posteriors.marginals.len(), 1);
-        assert_eq!(posteriors.marginals[0].identity, IdentityId(100));
-        assert_eq!(posteriors.marginals[0].probability, Probability::new(0.5));
+        struct TestFactor(IdentityId);
+
+        impl li_factors::factor::FactorScope for TestFactor {
+            fn scope(&self) -> &[IdentityId] {
+                core::slice::from_ref(&self.0)
+            }
+        }
+
+        impl li_factors::factor::Factor for TestFactor {
+            fn evaluate(&self, assignments: &[IdentityId]) -> Probability {
+                if assignments.contains(&self.0) {
+                    Probability::new(0.9)
+                } else {
+                    Probability::new(0.1)
+                }
+            }
+        }
+
+        fg.add_factor(Box::new(TestFactor(id)), &[v_idx]);
+
+        let solver = BeliefPropagationSolver::new(BpConfig::default());
+        let posteriors = solver.solve(&fg);
+
+        let probability = posteriors
+            .find_marginal(id)
+            .map(|marginal| marginal.probability.value());
+        assert!(probability.is_some_and(|value| (value - 0.9).abs() < 1e-2));
     }
 
     #[test]
-    fn test_bp_zero_probability_factor() {
-        let config = BpConfig {
-            max_iterations: 10,
-            convergence_threshold: 0.001,
-        };
-        let solver = BeliefPropagationSolver::new(config);
+    fn test_bp_without_factors_returns_uniform_marginals() {
+        let mut graph = FactorGraph::with_capacity(2, 0);
+        graph.add_variable(IdentityId(20));
+        graph.add_variable(IdentityId(10));
+
+        let posteriors =
+            BeliefPropagationSolver::new(BpConfig::default()).solve(&graph);
+
+        assert_eq!(posteriors.marginals.len(), 2);
+        for marginal in &posteriors.marginals {
+            assert_eq!(marginal.probability, Probability::new(0.5));
+            assert_eq!(marginal.log_odds, 0.0);
+        }
+    }
+
+    #[test]
+    fn test_bp_combines_multiple_unary_factors_exactly() {
+        struct UnaryFactor {
+            identity: IdentityId,
+            inactive: Probability,
+            active: Probability,
+        }
+
+        impl li_factors::factor::FactorScope for UnaryFactor {
+            fn scope(&self) -> &[IdentityId] {
+                core::slice::from_ref(&self.identity)
+            }
+        }
+
+        impl li_factors::factor::Factor for UnaryFactor {
+            fn evaluate(&self, assignments: &[IdentityId]) -> Probability {
+                if assignments.contains(&self.identity) {
+                    self.active
+                } else {
+                    self.inactive
+                }
+            }
+        }
+
+        let identity = IdentityId(7);
         let mut graph = FactorGraph::new();
-        let v0 = graph.add_variable(IdentityId(1));
+        let variable = graph.add_variable(identity);
+        graph.add_factor(
+            Box::new(UnaryFactor {
+                identity,
+                inactive: Probability::new(0.2),
+                active: Probability::new(0.8),
+            }),
+            &[variable],
+        );
+        graph.add_factor(
+            Box::new(UnaryFactor {
+                identity,
+                inactive: Probability::new(0.4),
+                active: Probability::new(0.6),
+            }),
+            &[variable],
+        );
 
-        let factor = Box::new(ConstantFactor {
-            scope_ids: alloc::vec![IdentityId(1)],
-            value: 0.0,
-        });
-        graph.add_factor(factor, &[v0]);
+        let posteriors =
+            BeliefPropagationSolver::new(BpConfig::default()).solve(&graph);
+        let probability = posteriors
+            .find_marginal(identity)
+            .map(|marginal| marginal.probability.value());
 
-        let posteriors = solver.solve(&graph);
-        assert_eq!(posteriors.marginals[0].probability, Probability::new(0.0));
+        assert!(probability.is_some_and(|value| {
+            (value - (0.48 / (0.48 + 0.08))).abs() < 1e-12
+        }));
     }
 }

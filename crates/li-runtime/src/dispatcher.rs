@@ -75,8 +75,8 @@ mod tests {
             observation: Observation {
                 id: ObservationId(1),
                 modality: Modality(1),
-                timestamp: Timestamp(100),
-                confidence: Confidence(0.99),
+                timestamp: Timestamp::from_millis(100),
+                confidence: Confidence::new(0.99),
                 payload: 42u64,
             },
             candidates: alloc::vec![IdentityId(10)],
