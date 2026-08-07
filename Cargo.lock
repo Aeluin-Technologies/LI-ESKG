@@ -677,7 +677,6 @@ version = "0.2.0"
 dependencies = [
  "li-core",
  "li-factors",
- "petgraph",
  "smallvec",
  "thiserror",
 ]
@@ -734,7 +733,7 @@ version = "0.2.0"
 dependencies = [
  "arc-swap",
  "bytes",
- "hashbrown 0.17.1",
+ "indexmap",
  "li-core",
  "li-factors",
  "thiserror",

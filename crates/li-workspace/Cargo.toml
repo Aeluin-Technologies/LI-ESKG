@@ -8,5 +8,5 @@ li-core = { path = "../li-core", version = "0.2.0" }
 li-factors = { path = "../li-factors", version = "0.2.0" }
 arc-swap = "1.7"
 bytes = { version = "1.10", features = ["serde"] }
-hashbrown = "0.17"
+indexmap = "2.14"
 thiserror = "2"

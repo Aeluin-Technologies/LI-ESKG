@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 use bytes::Bytes;
-use hashbrown::HashMap;
+use indexmap::IndexMap;
 use li_core::{
     BoundedHistory, CommitVersion, ContentHash, IdentityId, IdentityReference,
     ObservationEnvelope, ObservationId, ProviderId, SchemaId, Timestamp,
@@ -120,14 +120,14 @@ pub enum WorkspaceError {
 /// Active V2 belief cache with bounded history and allocation reuse.
 #[derive(Debug)]
 pub struct HotWorkspace {
-    identities: HashMap<IdentityId, HotIdentity>,
+    identities: IndexMap<IdentityId, HotIdentity>,
 }
 
 impl HotWorkspace {
     /// Creates an empty workspace with reserved identity capacity.
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
-            identities: HashMap::with_capacity(capacity),
+            identities: IndexMap::with_capacity(capacity),
         }
     }
 
@@ -180,9 +180,11 @@ impl HotWorkspace {
         output: &mut Vec<HotIdentity>,
     ) {
         output.clear();
-        self.identities
-            .extract_if(|_, state| state.last_activation < cutoff)
-            .for_each(|(_, state)| output.push(state));
+        output.extend(
+            self.identities
+                .extract_if(.., |_, state| state.last_activation < cutoff)
+                .map(|(_, state)| state),
+        );
     }
 
     /// Returns the number of active cache entries.

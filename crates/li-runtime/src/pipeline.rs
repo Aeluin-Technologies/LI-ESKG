@@ -427,14 +427,16 @@ where
         )
         .entered();
 
-        for provider in providers.iter() {
-            self.scratch.provider_candidates.reset(observations.len());
+        if let [provider] = providers.as_slice() {
+            // A single provider already emits canonical candidate groups. Let
+            // it write into the solver buffer directly, avoiding a second
+            // copy, sort, and dedup pass on the dominant deployment path.
             provider.generate_candidates(
                 &self.scratch.observations,
                 context,
-                &mut self.scratch.provider_candidates,
+                &mut self.scratch.candidates,
             )?;
-            let actual = self.scratch.provider_candidates.observation_count();
+            let actual = self.scratch.candidates.observation_count();
             if actual != observations.len() {
                 return Err(PipelineError::IncompleteProvider {
                     provider: provider.provider_id(),
@@ -442,21 +444,39 @@ where
                     actual,
                 });
             }
-            for index in 0..observations.len() {
-                if let Some(candidates) =
-                    self.scratch.provider_candidates.get(index)
-                {
-                    self.scratch.candidate_groups[index]
-                        .extend_from_slice(candidates);
+        } else {
+            for provider in providers.iter() {
+                self.scratch.provider_candidates.reset(observations.len());
+                provider.generate_candidates(
+                    &self.scratch.observations,
+                    context,
+                    &mut self.scratch.provider_candidates,
+                )?;
+                let actual =
+                    self.scratch.provider_candidates.observation_count();
+                if actual != observations.len() {
+                    return Err(PipelineError::IncompleteProvider {
+                        provider: provider.provider_id(),
+                        expected: observations.len(),
+                        actual,
+                    });
+                }
+                for index in 0..observations.len() {
+                    if let Some(candidates) =
+                        self.scratch.provider_candidates.get(index)
+                    {
+                        self.scratch.candidate_groups[index]
+                            .extend_from_slice(candidates);
+                    }
                 }
             }
-        }
-        for index in 0..observations.len() {
-            self.scratch.candidates.push_observation(
-                index,
-                observations.len(),
-                self.scratch.candidate_groups[index].drain(..),
-            )?;
+            for index in 0..observations.len() {
+                self.scratch.candidates.push_observation(
+                    index,
+                    observations.len(),
+                    self.scratch.candidate_groups[index].drain(..),
+                )?;
+            }
         }
         for provider in providers.iter() {
             provider.emit_factors(
@@ -489,29 +509,42 @@ where
             configuration_hash: snapshot.configuration_hash,
         });
         let diagnostics = Arc::new(posterior.diagnostics);
-        let mut contribution_groups: Vec<Vec<li_core::ScoreContribution>> =
-            (0..observations.len()).map(|_| Vec::new()).collect();
-        for factor in self.scratch.factors.as_slice() {
-            for variable in factor.variables() {
-                let Ok(index) = usize::try_from(*variable) else {
-                    continue;
-                };
-                if let Some(group) = contribution_groups.get_mut(index) {
-                    group.extend_from_slice(factor.contributions());
+        let has_contributions = self
+            .scratch
+            .factors
+            .as_slice()
+            .iter()
+            .any(|factor| !factor.contributions().is_empty());
+        let mut contribution_groups = has_contributions.then(|| {
+            let mut groups = Vec::with_capacity(observations.len());
+            groups.resize_with(observations.len(), Vec::new);
+            for factor in self.scratch.factors.as_slice() {
+                for variable in factor.variables() {
+                    let Ok(index) = usize::try_from(*variable) else {
+                        continue;
+                    };
+                    if let Some(group) = groups.get_mut(index) {
+                        group.extend_from_slice(factor.contributions());
+                    }
                 }
             }
-        }
+            groups
+        });
         let mut commands =
             Vec::with_capacity(observations.len().saturating_mul(2));
         let mut decisions = Vec::with_capacity(observations.len());
         let mut materializations = Vec::new();
         self.associations.clear();
 
-        for ((observation, distribution), contributions) in observations
+        for (index, (observation, distribution)) in observations
             .iter()
             .zip(posterior.distributions.into_vec())
-            .zip(contribution_groups)
+            .enumerate()
         {
+            let contributions = contribution_groups
+                .as_mut()
+                .and_then(|groups| groups.get_mut(index))
+                .map_or_else(Vec::new, std::mem::take);
             let action = self.policy.decide(&distribution);
             let inference_id = InferenceId(self.ids.inferences.next()?);
             let decision_id = DecisionId(self.ids.decisions.next()?);

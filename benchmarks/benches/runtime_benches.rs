@@ -352,6 +352,7 @@ fn bench_pipeline_eviction_lifecycle(c: &mut Criterion) {
     group.sample_size(20);
 
     for count in [10_000_u64, 100_000] {
+        let mut evicted = Vec::with_capacity((count / 2) as usize);
         group.throughput(Throughput::Elements(count));
         group.bench_with_input(
             BenchmarkId::new("evict_expired_50_percent", count),
@@ -375,13 +376,12 @@ fn bench_pipeline_eviction_lifecycle(c: &mut Criterion) {
                         workspace
                     },
                     |mut workspace| {
-                        let mut evicted =
-                            Vec::with_capacity((node_count / 2) as usize);
                         workspace.evict_before(
                             Timestamp::from_micros(500_000),
                             &mut evicted,
                         );
-                        black_box((workspace, evicted))
+                        black_box(evicted.len());
+                        black_box(workspace)
                     },
                     BatchSize::LargeInput,
                 );

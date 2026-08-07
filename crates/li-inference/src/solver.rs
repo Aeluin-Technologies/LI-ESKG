@@ -5,7 +5,7 @@ use li_core::{
     OutcomeProbability, Probability, SolverDiagnostics, SolverStoppingReason,
 };
 use li_factors::{CandidateBuffer, FactorTable};
-use petgraph::unionfind::UnionFind;
+use smallvec::{SmallVec, smallvec};
 use thiserror::Error;
 
 /// Error returned by factor-graph compilation or numeric inference.
@@ -95,14 +95,17 @@ struct Edge {
 #[derive(Debug, Default)]
 pub struct SolverScratch {
     edges: Vec<Edge>,
-    factor_edges: Vec<Vec<usize>>,
-    variable_edges: Vec<Vec<usize>>,
+    factor_edges: Vec<SmallVec<[usize; 2]>>,
+    variable_edges: Vec<SmallVec<[usize; 2]>>,
     variable_cardinalities: Vec<usize>,
-    factor_strides: Vec<Vec<usize>>,
+    factor_strides: Vec<SmallVec<[usize; 4]>>,
     variable_to_factor: Vec<f64>,
     factor_to_variable: Vec<f64>,
     next_messages: Vec<f64>,
     marginals: Vec<f64>,
+    topology_parent: Vec<usize>,
+    topology_size: Vec<usize>,
+    topology_edges: Vec<usize>,
 }
 
 impl SolverScratch {
@@ -126,6 +129,9 @@ impl SolverScratch {
         self.factor_to_variable.clear();
         self.next_messages.clear();
         self.marginals.clear();
+        self.topology_parent.clear();
+        self.topology_size.clear();
+        self.topology_edges.clear();
     }
 }
 
@@ -232,7 +238,7 @@ impl SumProductSolver {
     ) -> Result<(), SolverError> {
         scratch.clear();
         let variables = candidates.observation_count();
-        scratch.variable_edges.resize_with(variables, Vec::new);
+        scratch.variable_edges.resize_with(variables, SmallVec::new);
         scratch.variable_cardinalities.reserve(variables);
         for variable in 0..variables {
             let cardinality = candidates
@@ -240,13 +246,16 @@ impl SumProductSolver {
                 .map_or(2, |domain| domain.len().saturating_add(2));
             scratch.variable_cardinalities.push(cardinality);
         }
-        scratch.factor_edges.resize_with(factors.len(), Vec::new);
+        scratch
+            .factor_edges
+            .resize_with(factors.len(), SmallVec::new);
         scratch.factor_strides.reserve(factors.len());
 
         let mut message_len = 0_usize;
         for (factor_index, factor) in factors.iter().enumerate() {
             let scope_len = factor.variables().len();
-            let mut strides = vec![1_usize; scope_len];
+            let mut strides: SmallVec<[usize; 4]> =
+                smallvec![1_usize; scope_len];
             if scope_len > 1 {
                 for position in (0..scope_len - 1).rev() {
                     let next = position + 1;
@@ -300,27 +309,72 @@ impl SumProductSolver {
     fn topology(
         self,
         variables: usize,
-        scratch: &SolverScratch,
+        scratch: &mut SolverScratch,
     ) -> (bool, u32) {
         let nodes = variables.saturating_add(scratch.factor_edges.len());
-        let mut components = UnionFind::new(nodes);
+        scratch.topology_parent.extend(0..nodes);
+        scratch.topology_size.resize(nodes, 1);
+        scratch.topology_edges.resize(nodes, 0);
         let mut acyclic = true;
         for edge in &scratch.edges {
             let factor = variables.saturating_add(edge.factor);
-            if !components.union(edge.variable, factor) {
+            if !Self::union_components(
+                &mut scratch.topology_parent,
+                &mut scratch.topology_size,
+                edge.variable,
+                factor,
+            ) {
                 acyclic = false;
             }
         }
-        let mut component_edges = vec![0_usize; nodes];
         for edge in &scratch.edges {
-            let root = components.find(edge.variable);
-            component_edges[root] = component_edges[root].saturating_add(1);
+            let root = Self::component_root(
+                &mut scratch.topology_parent,
+                edge.variable,
+            );
+            scratch.topology_edges[root] =
+                scratch.topology_edges[root].saturating_add(1);
         }
-        let largest = component_edges.into_iter().max().unwrap_or(0);
+        let largest =
+            scratch.topology_edges.iter().copied().max().unwrap_or(0);
         let passes = u32::try_from(largest.saturating_add(1))
             .unwrap_or(u32::MAX)
             .max(1);
         (acyclic, passes)
+    }
+
+    /// Returns a component root and compresses its traversed parent chain.
+    fn component_root(parent: &mut [usize], mut node: usize) -> usize {
+        let mut root = node;
+        while parent[root] != root {
+            root = parent[root];
+        }
+        while parent[node] != node {
+            let next = parent[node];
+            parent[node] = root;
+            node = next;
+        }
+        root
+    }
+
+    /// Unites two components by size and reports whether they were distinct.
+    fn union_components(
+        parent: &mut [usize],
+        sizes: &mut [usize],
+        left: usize,
+        right: usize,
+    ) -> bool {
+        let mut left_root = Self::component_root(parent, left);
+        let mut right_root = Self::component_root(parent, right);
+        if left_root == right_root {
+            return false;
+        }
+        if sizes[left_root] < sizes[right_root] {
+            std::mem::swap(&mut left_root, &mut right_root);
+        }
+        parent[right_root] = left_root;
+        sizes[left_root] = sizes[left_root].saturating_add(sizes[right_root]);
+        true
     }
 
     fn factor_pass(
