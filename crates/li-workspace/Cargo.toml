@@ -1,8 +1,12 @@
 [package]
 name = "li-workspace"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 
 [dependencies]
-li-core = { path = "../li-core", version = "0.1.0" }
+li-core = { path = "../li-core", version = "0.2.0" }
+li-factors = { path = "../li-factors", version = "0.2.0" }
+arc-swap = "1.7"
+bytes = { version = "1.10", features = ["serde"] }
 hashbrown = "0.17"
+thiserror = "2"

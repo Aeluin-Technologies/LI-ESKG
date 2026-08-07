@@ -6,18 +6,24 @@
 
 #![deny(unsafe_code, missing_docs)]
 
-pub mod belief;
-pub mod events;
+pub mod command;
+pub mod decision;
+pub mod evidence;
+pub mod history;
+pub mod host;
+pub mod identity;
 pub mod ids;
+pub mod inference;
 pub mod observation;
-pub mod ontology;
 pub mod probability;
-pub mod relation;
 
-pub use belief::*;
-pub use events::*;
+pub use command::*;
+pub use decision::*;
+pub use evidence::*;
+pub use history::*;
+pub use host::*;
+pub use identity::*;
 pub use ids::*;
+pub use inference::*;
 pub use observation::*;
-pub use ontology::*;
 pub use probability::*;
-pub use relation::*;

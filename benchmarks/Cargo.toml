@@ -8,14 +8,18 @@ publish = false
 [dependencies]
 # criterion = { version = "0.8", features = ["html_reports"] }
 criterion = { version = "5.0.1", features = ["html_reports"], package = "codspeed-criterion-compat" }
-rand = "0.10"
-rand_chacha = "0.10"
+bytes = "1.12"
+petgraph = "0.8"
+smallvec = "1.15"
+thiserror = "2"
 
 li-core = { path = "../crates/li-core" }
-li-model = { path = "../crates/li-model" }
-li-workspace = { path = "../crates/li-workspace" }
 li-factors = { path = "../crates/li-factors" }
+li-inference = { path = "../crates/li-inference" }
+li-model = { path = "../crates/li-model" }
 li-runtime = { path = "../crates/li-runtime" }
+li-storage = { path = "../crates/li-storage", default-features = false }
+li-workspace = { path = "../crates/li-workspace" }
 
 [[bench]]
 name = "invariant_benches"

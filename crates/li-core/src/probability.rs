@@ -30,30 +30,6 @@ impl fmt::Display for ProbabilityError {
 
 impl Error for ProbabilityError {}
 
-/// Validation error returned when constructing a confidence score.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ConfidenceError {
-    /// The value is NaN or infinite.
-    NonFinite,
-    /// The value is negative.
-    Negative,
-}
-
-impl fmt::Display for ConfidenceError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::NonFinite => {
-                formatter.write_str("confidence must be finite")
-            },
-            Self::Negative => {
-                formatter.write_str("confidence must be non-negative")
-            },
-        }
-    }
-}
-
-impl Error for ConfidenceError {}
-
 /// A continuous probability value within `[0.0, 1.0]`.
 #[derive(Serialize, Debug, Clone, Copy, PartialEq, PartialOrd)]
 pub struct Probability(f64);
@@ -190,77 +166,6 @@ impl Default for Probability {
     }
 }
 
-/// An unnormalized non-negative confidence score representing sensor or
-/// pipeline measurement certainty.
-#[derive(Serialize, Debug, Clone, Copy, PartialEq, PartialOrd)]
-pub struct Confidence(f64);
-
-impl Confidence {
-    /// Zero confidence constant.
-    pub const ZERO: Self = Self(0.0);
-
-    /// Instantiates a saturated non-negative confidence score.
-    ///
-    /// Negative and NaN values map to zero. Positive infinity maps to
-    /// `f64::MAX`. Use [`Self::try_new`] when invalid input must be reported.
-    ///
-    /// # Arguments
-    ///
-    /// * `value` - Raw confidence score value.
-    pub fn new(value: f64) -> Self {
-        if value.is_nan() || value <= 0.0 {
-            Self::ZERO
-        } else if value == f64::INFINITY {
-            Self(f64::MAX)
-        } else {
-            Self(value)
-        }
-    }
-
-    /// Constructs a confidence score after validating it is finite and
-    /// non-negative.
-    ///
-    /// # Arguments
-    ///
-    /// * `value` - Candidate confidence score.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ConfidenceError`] when `value` is non-finite or negative.
-    pub fn try_new(value: f64) -> Result<Self, ConfidenceError> {
-        if !value.is_finite() {
-            Err(ConfidenceError::NonFinite)
-        } else if value < 0.0 {
-            Err(ConfidenceError::Negative)
-        } else if value == 0.0 {
-            Ok(Self::ZERO)
-        } else {
-            Ok(Self(value))
-        }
-    }
-
-    /// Returns the underlying raw `f64` confidence score.
-    pub const fn value(&self) -> f64 {
-        self.0
-    }
-}
-
-impl<'de> Deserialize<'de> for Confidence {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let value = f64::deserialize(deserializer)?;
-        Self::try_new(value).map_err(D::Error::custom)
-    }
-}
-
-impl Default for Confidence {
-    fn default() -> Self {
-        Self::ZERO
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -325,39 +230,17 @@ mod tests {
     }
 
     #[test]
-    fn confidence_construction_is_finite_and_saturating() {
-        assert_eq!(Confidence::new(-10.0).value(), 0.0);
-        assert_eq!(Confidence::new(f64::NAN).value(), 0.0);
-        assert_eq!(Confidence::new(f64::INFINITY).value(), f64::MAX);
-        assert_eq!(Confidence::new(12.5).value(), 12.5);
-        assert_eq!(Confidence::try_new(-1.0), Err(ConfidenceError::Negative));
-        assert_eq!(
-            Confidence::try_new(f64::INFINITY),
-            Err(ConfidenceError::NonFinite)
-        );
-        assert_eq!(Confidence::try_new(12.5), Ok(Confidence::new(12.5)));
-    }
-
-    #[test]
     fn serde_deserialization_rejects_invalid_scalar_representations() {
         use serde::de::value::{Error, F64Deserializer};
 
         let invalid_probability = serde_json::from_str::<Probability>("1.1");
         let negative_probability = serde_json::from_str::<Probability>("-0.1");
-        let invalid_confidence = serde_json::from_str::<Confidence>("-1.0");
         let valid_probability = serde_json::from_str::<Probability>("0.75");
         let nan_probability =
             Probability::deserialize(F64Deserializer::<Error>::new(f64::NAN));
-        let infinite_confidence =
-            Confidence::deserialize(F64Deserializer::<Error>::new(
-                f64::INFINITY,
-            ));
-
         assert!(invalid_probability.is_err());
         assert!(negative_probability.is_err());
-        assert!(invalid_confidence.is_err());
         assert!(nan_probability.is_err());
-        assert!(infinite_confidence.is_err());
         assert!(valid_probability.is_ok());
         if let Ok(valid_probability) = valid_probability {
             assert_eq!(valid_probability, Probability::new(0.75));

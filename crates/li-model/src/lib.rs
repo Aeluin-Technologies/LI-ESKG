@@ -5,22 +5,16 @@
 
 #![deny(unsafe_code)]
 
-pub mod graph;
-pub mod invariants;
-pub mod ontology;
-pub mod operations;
-pub mod projection;
-pub mod queries;
+pub mod host_graph;
+pub mod interoperability;
 pub mod spatial;
 
-pub use graph::{
-    GraphError, KnowledgeGraph, MergeOutcome, PetGraphStore, RawGraph,
+pub use host_graph::{
+    AuthoritativeHostGraph, HostEdge, HostGraphError, HostSchemaError,
+    HostSchemaProfile, MaterializationOutcome,
 };
-pub use invariants::{Invariant, InvariantViolation};
-pub use ontology::{EdgeData, NodeData};
-pub use operations::{GraphOperation, IdentityAssignment};
-pub use projection::{
-    EventStateGraph, EventStateNode, EventStateProjection, GraphProjection,
+pub use interoperability::{
+    InteroperabilityProjector, ProjectionError, RdfProfile,
 };
 pub use spatial::{
     Covariance2D, GeoPoint, SpatialComponent, SpatialError, SpatialGaussian2D,

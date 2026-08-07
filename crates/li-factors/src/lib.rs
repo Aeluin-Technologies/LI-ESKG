@@ -6,12 +6,9 @@
 
 #![deny(unsafe_code)]
 
-extern crate alloc;
+pub mod provider;
 
-pub mod compatibility;
-pub mod compiler;
-pub mod factor;
-
-pub use compatibility::{KCandidateDistribution, MultiCandidateCompatibility};
-pub use compiler::{DirectMapDecision, FactorCompiler};
-pub use factor::{Factor, FactorError, FactorScope};
+pub use provider::{
+    CandidateBuffer, FactorBuffer, FactorProvider, FactorTable,
+    ProviderContext, ProviderError,
+};

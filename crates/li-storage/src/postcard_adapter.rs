@@ -1,7 +1,5 @@
 //! Postcard binary serialization and deserialization wrappers.
 
-use alloc::vec::Vec;
-
 use serde::{Deserialize, Serialize};
 
 use crate::errors::StorageError;

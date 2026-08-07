@@ -1,147 +1,137 @@
 //! Benchmarks for allocation-bounded core and transactional graph operations.
 
 use std::hint::black_box;
+use std::sync::Arc;
 
 use criterion::{
     BatchSize, BenchmarkId, Criterion, Throughput, criterion_group,
     criterion_main,
 };
-use li_core::belief::BoundedHistory;
-use li_core::ids::{EventId, IdentityId, ObservationId};
-use li_core::observation::{Modality, Observation, Timestamp};
-use li_core::ontology::Vertex;
-use li_core::probability::Confidence;
-use li_core::relation::Relation;
-use li_model::graph::{KnowledgeGraph, PetGraphStore};
-use li_model::operations::{GraphOperation, IdentityAssignment};
+use li_core::{
+    BoundedHistory, CommandEnvelope, CommitVersion, DecisionId, EventId,
+    HostNodeId, HostRelation, IdempotencyKey, IdentityId, MaterializationId,
+    PhysicalNodeId, ResolutionCommand, Timestamp, TransactionId,
+};
+use li_model::{AuthoritativeHostGraph, HostSchemaProfile};
+use li_storage::MemoryLedger;
+use petgraph::stable_graph::NodeIndex;
+use petgraph::visit::EdgeRef;
 
-type BenchStore = PetGraphStore<[f32; 4], (), ()>;
+/// Creates the complete native host predicate profile used by benchmarks.
+fn profile() -> Option<HostSchemaProfile> {
+    HostSchemaProfile::new([
+        Arc::from("native:triggers"),
+        Arc::from("native:leadsTo"),
+        Arc::from("native:evolution"),
+        Arc::from("native:contain"),
+        Arc::from("native:occur"),
+        Arc::from("native:influence"),
+    ])
+    .ok()
+}
 
-const TARGET_IDENTITY: IdentityId = IdentityId(1);
-const DUPLICATE_IDENTITY: IdentityId = IdentityId(2);
+/// Creates a deterministic non-zero replay key.
+fn key(value: u64) -> Option<IdempotencyKey> {
+    let mut bytes = [0_u8; 16];
+    bytes[..8].copy_from_slice(&value.to_le_bytes());
+    IdempotencyKey::new(bytes).ok()
+}
 
-/// Creates a fixed-size observation payload for graph materialization.
-fn observation(id: u64) -> Observation<[f32; 4]> {
-    Observation::new(
-        ObservationId(id),
-        Modality(1),
-        Timestamp::from_micros(id as i64),
-        Confidence::new(0.95),
-        [id as f32, 1.0, 2.0, 3.0],
+/// Creates one V2 command envelope at the supplied ledger version.
+fn envelope(
+    sequence: u64,
+    version: CommitVersion,
+    commands: Vec<ResolutionCommand>,
+) -> Option<CommandEnvelope> {
+    CommandEnvelope::new(
+        TransactionId(sequence),
+        version,
+        key(sequence)?,
+        Timestamp::from_micros(i64::try_from(sequence).unwrap_or(i64::MAX)),
+        Vec::new(),
+        commands,
     )
+    .ok()
 }
 
-/// Creates a pre-reserved graph containing one active identity.
-fn store_with_identity(
-    identity: IdentityId,
-    node_capacity: usize,
-    edge_capacity: usize,
-) -> BenchStore {
-    let mut store = PetGraphStore::with_capacity(node_capacity, edge_capacity);
-    let result = store.apply_batch([GraphOperation::CommitIdentity {
-        id: identity,
-        created_at: Timestamp::UNIX_EPOCH,
-    }]);
-    assert!(
-        result.is_ok(),
-        "benchmark identity setup failed: {result:?}"
+/// Builds a host support star and returns its zero-copy traversal root.
+fn support_graph(
+    degree: usize,
+) -> Option<(AuthoritativeHostGraph, NodeIndex<u32>)> {
+    let mut graph = AuthoritativeHostGraph::with_capacity(
+        profile()?,
+        degree.saturating_add(1),
+        degree,
     );
-    store
-}
-
-/// Builds a pre-reserved identity support star of the requested degree.
-fn support_store(degree: usize, identity: IdentityId) -> BenchStore {
-    let mut store =
-        store_with_identity(identity, degree.saturating_add(1), degree);
+    let physical = graph
+        .add_node(HostNodeId::Physical(PhysicalNodeId(1)))
+        .ok()?;
     for offset in 0..degree {
-        let id = (offset as u64).saturating_add(1);
-        let result = store.materialize_observation(
-            observation(id),
-            IdentityAssignment::Existing(identity),
-        );
-        assert!(result.is_ok(), "benchmark support setup failed: {result:?}");
+        let id = u64::try_from(offset).ok()?.saturating_add(1);
+        graph.add_node(HostNodeId::Event(EventId(id))).ok()?;
+        graph
+            .materialize(
+                HostRelation::Occur {
+                    event: EventId(id),
+                    physical: PhysicalNodeId(1),
+                },
+                DecisionId(id),
+                CommitVersion::new(1),
+                MaterializationId(id),
+            )
+            .ok()?;
     }
-    store
+    Some((graph, physical))
 }
 
-/// Builds the target and duplicate identities used by merge benchmarks.
-fn merge_store(degree: usize) -> BenchStore {
-    let mut store =
-        PetGraphStore::with_capacity(degree.saturating_add(2), degree);
-    let identities = [
-        GraphOperation::CommitIdentity {
-            id: TARGET_IDENTITY,
+/// Builds a chain of active merge classes for revision scaling.
+fn merge_ledger(degree: usize) -> Option<MemoryLedger> {
+    let mut ledger = MemoryLedger::with_capacity(
+        degree.saturating_mul(2).saturating_add(4),
+        degree.saturating_add(2),
+    );
+    let identities = (0..degree.saturating_add(2))
+        .map(|offset| ResolutionCommand::CreateIdentity {
+            identity: IdentityId(
+                u64::try_from(offset).unwrap_or(u64::MAX) + 1,
+            ),
             created_at: Timestamp::UNIX_EPOCH,
-        },
-        GraphOperation::CommitIdentity {
-            id: DUPLICATE_IDENTITY,
-            created_at: Timestamp::UNIX_EPOCH,
-        },
-    ];
-    let result = store.apply_batch(identities);
-    assert!(result.is_ok(), "benchmark merge setup failed: {result:?}");
-
+        })
+        .collect();
+    ledger
+        .commit(envelope(1, CommitVersion::ZERO, identities)?)
+        .ok()?;
     for offset in 0..degree {
-        let id = (offset as u64).saturating_add(1);
-        let result = store.materialize_observation(
-            observation(id),
-            IdentityAssignment::Existing(DUPLICATE_IDENTITY),
-        );
-        assert!(
-            result.is_ok(),
-            "benchmark merge incidence setup failed: {result:?}"
-        );
+        let sequence = u64::try_from(offset).ok()?.saturating_add(2);
+        let command = ResolutionCommand::merge(
+            DecisionId(sequence),
+            IdentityId(1),
+            IdentityId(sequence),
+            Vec::new(),
+            1,
+            1,
+        )
+        .ok()?;
+        let next = envelope(sequence, ledger.version(), vec![command])?;
+        ledger.commit(next).ok()?;
     }
-    store
+    Some(ledger)
 }
 
-/// Creates a batch whose final relation fails after nodes and an edge commit.
-fn late_failure_batch() -> [GraphOperation<[f32; 4], (), ()>; 5] {
-    let timestamp = Timestamp::from_micros(1);
-    [
-        GraphOperation::CommitObservation(observation(1)),
-        GraphOperation::CommitEvent {
-            id: EventId(1),
-            timestamp,
-            payload: (),
-        },
-        GraphOperation::CommitEvent {
-            id: EventId(2),
-            timestamp,
-            payload: (),
-        },
-        GraphOperation::CommitRelation {
-            source: Vertex::Event(EventId(1)),
-            relation: Relation::Influence,
-            target: Vertex::Event(EventId(2)),
-            created_at: timestamp,
-        },
-        GraphOperation::CommitRelation {
-            source: Vertex::Event(EventId(2)),
-            relation: Relation::Influence,
-            target: Vertex::Event(EventId(3)),
-            created_at: timestamp,
-        },
-    ]
-}
-
-/// Measures full-ring appends after the one-time allocation has completed.
 fn bench_bounded_history_append(c: &mut Criterion) {
     let mut group = c.benchmark_group("BoundedHistory::steady_state_push");
     group.throughput(Throughput::Elements(1));
-
     for capacity in [1_usize, 8, 64, 256, 1_024] {
         let mut history = BoundedHistory::new(capacity);
         for value in 0..capacity {
-            let _evicted = history.push(value as u64);
+            let _ = history.push(value as u64);
         }
         let mut value = capacity as u64;
-
         group.bench_with_input(
             BenchmarkId::from_parameter(capacity),
             &capacity,
-            |bencher, _| {
-                bencher.iter(|| {
+            |b, _| {
+                b.iter(|| {
                     value = value.wrapping_add(1);
                     black_box(history.push(black_box(value)))
                 });
@@ -153,35 +143,67 @@ fn bench_bounded_history_append(c: &mut Criterion) {
 
 /// Measures the atomic new-identity and existing-identity commit paths.
 fn bench_observation_materialization(c: &mut Criterion) {
+    let Some(host_profile) = profile() else {
+        return;
+    };
     let mut group =
-        c.benchmark_group("PetGraphStore::materialize_observation");
+        c.benchmark_group("V2::AuthoritativeHostGraph::materialize");
     group.throughput(Throughput::Elements(1));
-
-    group.bench_function("new_identity_pre_reserved", |bencher| {
-        bencher.iter_batched_ref(
-            || BenchStore::with_capacity(2, 1),
-            |store| {
-                let result = store.materialize_observation(
-                    observation(1),
-                    IdentityAssignment::New(TARGET_IDENTITY),
-                );
-                debug_assert!(result.is_ok());
-                black_box(result)
+    group.bench_function("new_identity_pre_reserved", |b| {
+        b.iter_batched(
+            || {
+                AuthoritativeHostGraph::with_capacity(
+                    host_profile.clone(),
+                    2,
+                    1,
+                )
+            },
+            |mut graph| {
+                let first = graph.add_node(HostNodeId::Event(EventId(1)));
+                let second =
+                    graph.add_node(HostNodeId::Physical(PhysicalNodeId(1)));
+                let result = if first.is_ok() && second.is_ok() {
+                    graph.materialize(
+                        HostRelation::Occur {
+                            event: EventId(1),
+                            physical: PhysicalNodeId(1),
+                        },
+                        DecisionId(1),
+                        CommitVersion::new(1),
+                        MaterializationId(1),
+                    )
+                } else {
+                    return black_box(graph);
+                };
+                let _ = black_box(result);
+                black_box(graph)
             },
             BatchSize::SmallInput,
         );
     });
-
-    group.bench_function("existing_identity_pre_reserved", |bencher| {
-        bencher.iter_batched_ref(
-            || store_with_identity(TARGET_IDENTITY, 2, 1),
-            |store| {
-                let result = store.materialize_observation(
-                    observation(1),
-                    IdentityAssignment::Existing(TARGET_IDENTITY),
+    group.bench_function("existing_identity_pre_reserved", |b| {
+        b.iter_batched(
+            || {
+                let mut graph = AuthoritativeHostGraph::with_capacity(
+                    host_profile.clone(),
+                    2,
+                    1,
                 );
-                debug_assert!(result.is_ok());
-                black_box(result)
+                let _ = graph.add_node(HostNodeId::Event(EventId(1)));
+                let _ =
+                    graph.add_node(HostNodeId::Physical(PhysicalNodeId(1)));
+                graph
+            },
+            |mut graph| {
+                black_box(graph.materialize(
+                    HostRelation::Occur {
+                        event: EventId(1),
+                        physical: PhysicalNodeId(1),
+                    },
+                    DecisionId(1),
+                    CommitVersion::new(1),
+                    MaterializationId(1),
+                ))
             },
             BatchSize::SmallInput,
         );
@@ -192,24 +214,28 @@ fn bench_observation_materialization(c: &mut Criterion) {
 /// Measures reference-only traversal of observation support stars.
 fn bench_zero_copy_support_iteration(c: &mut Criterion) {
     let mut group =
-        c.benchmark_group("PetGraphStore::supporting_observations");
-
+        c.benchmark_group("V2::AuthoritativeHostGraph::incoming_relations");
     for degree in [1_usize, 8, 64, 512, 4_096] {
-        let store = support_store(degree, TARGET_IDENTITY);
+        let Some((graph, physical)) = support_graph(degree) else {
+            continue;
+        };
         group.throughput(Throughput::Elements(degree as u64));
         group.bench_with_input(
             BenchmarkId::from_parameter(degree),
             &degree,
-            |bencher, _| {
-                bencher.iter(|| {
-                    let support =
-                        store.supporting_observations(TARGET_IDENTITY);
-                    debug_assert!(support.is_ok());
-                    let checksum = support.map_or(0_u64, |observations| {
-                        observations.fold(0_u64, |accumulator, item| {
-                            accumulator.wrapping_add(item.id.0)
-                        })
-                    });
+            |b, _| {
+                b.iter(|| {
+                    let checksum = graph
+                        .graph()
+                        .edges_directed(
+                            physical,
+                            petgraph::Direction::Incoming,
+                        )
+                        .fold(0_u64, |acc, edge| {
+                            acc.wrapping_add(u64::from(
+                                edge.id().index() as u32
+                            ))
+                        });
                     black_box(checksum)
                 });
             },
@@ -220,24 +246,40 @@ fn bench_zero_copy_support_iteration(c: &mut Criterion) {
 
 /// Measures identity canonicalization across representative incident degrees.
 fn bench_identity_merge(c: &mut Criterion) {
-    let mut group = c.benchmark_group("PetGraphStore::merge_identities");
+    let mut group =
+        c.benchmark_group("V2::ResolutionLedger::merge_identities");
 
     for degree in [1_usize, 8, 64, 512] {
-        let template = merge_store(degree);
+        let Some(template) = merge_ledger(degree) else {
+            continue;
+        };
         group.throughput(Throughput::Elements(degree as u64));
         group.bench_with_input(
             BenchmarkId::from_parameter(degree),
             &degree,
-            |bencher, _| {
-                bencher.iter_batched_ref(
+            |b, &merge_degree| {
+                b.iter_batched(
                     || template.clone(),
-                    |store| {
-                        let result = store.merge_identities(
-                            TARGET_IDENTITY,
-                            DUPLICATE_IDENTITY,
+                    |mut ledger| {
+                        let sequence = u64::try_from(merge_degree)
+                            .unwrap_or(u64::MAX)
+                            .saturating_add(10_000);
+                        let command = ResolutionCommand::merge(
+                            DecisionId(sequence),
+                            IdentityId(1),
+                            IdentityId(
+                                u64::try_from(merge_degree)
+                                    .unwrap_or(u64::MAX)
+                                    .saturating_add(2),
+                            ),
+                            Vec::new(),
+                            1,
+                            1,
                         );
-                        debug_assert!(result.is_ok());
-                        black_box(result)
+                        let result = command.ok().and_then(|command| {
+                            envelope(sequence, ledger.version(), vec![command])
+                        });
+                        black_box(result.map(|batch| ledger.commit(batch)))
                     },
                     BatchSize::LargeInput,
                 );
@@ -249,18 +291,48 @@ fn bench_identity_merge(c: &mut Criterion) {
 
 /// Measures rollback when the last operation in a transaction fails.
 fn bench_atomic_late_failure_rollback(c: &mut Criterion) {
-    let mut group = c.benchmark_group("PetGraphStore::late_failure_rollback");
+    let Some(batch) = envelope(
+        1,
+        CommitVersion::ZERO,
+        vec![
+            ResolutionCommand::CreateIdentity {
+                identity: IdentityId(1),
+                created_at: Timestamp::UNIX_EPOCH,
+            },
+            ResolutionCommand::CreateIdentity {
+                identity: IdentityId(2),
+                created_at: Timestamp::UNIX_EPOCH,
+            },
+            ResolutionCommand::CreateIdentity {
+                identity: IdentityId(3),
+                created_at: Timestamp::UNIX_EPOCH,
+            },
+            ResolutionCommand::CreateIdentity {
+                identity: IdentityId(4),
+                created_at: Timestamp::UNIX_EPOCH,
+            },
+            ResolutionCommand::CreateIdentity {
+                identity: IdentityId(1),
+                created_at: Timestamp::UNIX_EPOCH,
+            },
+        ],
+    ) else {
+        return;
+    };
+    let mut group =
+        c.benchmark_group("V2::ResolutionLedger::late_failure_rollback");
     group.throughput(Throughput::Elements(5));
-
-    let mut store = BenchStore::with_capacity(3, 2);
-    group.bench_function("node_and_edge_journal", |bencher| {
-        bencher.iter(|| {
-            let result = store.apply_batch(late_failure_batch());
-            debug_assert!(result.is_err());
-            debug_assert_eq!(store.node_count(), 0);
-            debug_assert_eq!(store.edge_count(), 0);
-            black_box(result)
-        });
+    group.bench_function("node_and_edge_journal", |b| {
+        b.iter_batched(
+            MemoryLedger::default,
+            |mut ledger| {
+                let result = ledger.commit(batch.clone());
+                debug_assert!(result.is_err());
+                debug_assert_eq!(ledger.version(), CommitVersion::ZERO);
+                black_box(result)
+            },
+            BatchSize::SmallInput,
+        );
     });
     group.finish();
 }

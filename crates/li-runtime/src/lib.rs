@@ -5,14 +5,11 @@
 
 #![deny(unsafe_code, missing_docs)]
 
-extern crate alloc;
+pub mod pipeline;
 
-pub mod channels;
-pub mod dispatcher;
-pub mod engine;
-pub mod executor;
-
-pub use channels::EventQueue;
-pub use dispatcher::{DispatchOutcome, EventDispatcher};
-pub use engine::{EngineConfig, RuntimeEngine};
-pub use executor::{ExecutionSink, OperationExecutor};
+pub use pipeline::{
+    BatchPhase, BoundedIngress, Committed, Decided, HostMaterializer,
+    Inferred, MaterializationFailure, MaterializationPlanner, Persisted,
+    PipelineError, ProcessResult, Received, ResolutionRuntime, RetryError,
+    RuntimeSnapshot,
+};

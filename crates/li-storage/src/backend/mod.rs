@@ -1,9 +1,9 @@
-//! Backend drivers for no-std memory storage and std RocksDB integration.
+//! Standard-library memory and transactional RocksDB backend drivers.
 
 pub mod memory;
 pub use memory::MemoryKvBackend;
 
-#[cfg(feature = "std")]
+#[cfg(feature = "rocksdb")]
 pub mod rocksdb;
-#[cfg(feature = "std")]
+#[cfg(feature = "rocksdb")]
 pub use self::rocksdb::RocksDbBackend;

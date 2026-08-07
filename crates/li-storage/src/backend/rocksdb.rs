@@ -1,7 +1,6 @@
 //! RocksDB driver implementation mapping native driver errors to static
 //! StorageError variants.
 
-use alloc::vec::Vec;
 use std::path::Path;
 
 use rocksdb::{ColumnFamilyDescriptor, DB, Options, WriteBatch};
@@ -23,44 +22,10 @@ impl RocksDbBackend {
         db_opts.create_if_missing(true);
         db_opts.create_missing_column_families(true);
 
-        let cfs = vec![
-            ColumnFamilyDescriptor::new(
-                ColumnFamily::Ontology.as_str(),
-                Options::default(),
-            ),
-            ColumnFamilyDescriptor::new(
-                ColumnFamily::Observations.as_str(),
-                Options::default(),
-            ),
-            ColumnFamilyDescriptor::new(
-                ColumnFamily::Identities.as_str(),
-                Options::default(),
-            ),
-            ColumnFamilyDescriptor::new(
-                ColumnFamily::Events.as_str(),
-                Options::default(),
-            ),
-            ColumnFamilyDescriptor::new(
-                ColumnFamily::States.as_str(),
-                Options::default(),
-            ),
-            ColumnFamilyDescriptor::new(
-                ColumnFamily::OutEdges.as_str(),
-                Options::default(),
-            ),
-            ColumnFamilyDescriptor::new(
-                ColumnFamily::InEdges.as_str(),
-                Options::default(),
-            ),
-            ColumnFamilyDescriptor::new(
-                ColumnFamily::Checkpoints.as_str(),
-                Options::default(),
-            ),
-            ColumnFamilyDescriptor::new(
-                ColumnFamily::WalObservations.as_str(),
-                Options::default(),
-            ),
-        ];
+        let cfs = vec![ColumnFamilyDescriptor::new(
+            ColumnFamily::ResolutionLedger.as_str(),
+            Options::default(),
+        )];
 
         let db =
             DB::open_cf_descriptors(&db_opts, path, cfs).map_err(|_| {
@@ -160,14 +125,15 @@ mod tests {
     use crate::traits::{KvBackend, KvOp};
 
     #[test]
-    fn test_rocksdb_open_put_get_delete() {
-        let dir = tempdir().unwrap();
-        let mut backend = RocksDbBackend::open(dir.path()).unwrap();
-        let cf = ColumnFamily::Identities;
+    fn test_rocksdb_open_put_get_delete()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let mut backend = RocksDbBackend::open(dir.path())?;
+        let cf = ColumnFamily::ResolutionLedger;
         let key = b"id_key".to_vec();
         let value = b"id_val".to_vec();
 
-        assert_eq!(backend.get(cf, &key).unwrap(), None);
+        assert_eq!(backend.get(cf, &key)?, None);
 
         let batch = vec![KvOp::Put {
             cf,
@@ -176,7 +142,7 @@ mod tests {
         }];
         assert!(backend.apply_transaction(&batch).is_ok());
 
-        assert_eq!(backend.get(cf, &key).unwrap(), Some(value));
+        assert_eq!(backend.get(cf, &key)?, Some(value));
 
         let del_batch = vec![KvOp::Delete {
             cf,
@@ -184,16 +150,18 @@ mod tests {
         }];
         assert!(backend.apply_transaction(&del_batch).is_ok());
 
-        assert_eq!(backend.get(cf, &key).unwrap(), None);
+        assert_eq!(backend.get(cf, &key)?, None);
+        Ok(())
     }
 
     #[test]
-    fn test_rocksdb_prefix_scan_and_persistence() {
-        let dir = tempdir().unwrap();
-        let cf = ColumnFamily::WalObservations;
+    fn test_rocksdb_prefix_scan_and_persistence()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let cf = ColumnFamily::ResolutionLedger;
 
         {
-            let mut backend = RocksDbBackend::open(dir.path()).unwrap();
+            let mut backend = RocksDbBackend::open(dir.path())?;
             let batch = vec![
                 KvOp::Put {
                     cf,
@@ -211,31 +179,33 @@ mod tests {
                     value: b"payload3".to_vec(),
                 },
             ];
-            backend.apply_transaction(&batch).unwrap();
+            backend.apply_transaction(&batch)?;
 
-            let scan = backend.prefix_scan(cf, b"wal_").unwrap();
+            let scan = backend.prefix_scan(cf, b"wal_")?;
             assert_eq!(scan.len(), 2);
             assert_eq!(scan[0], (b"wal_001".to_vec(), b"payload1".to_vec()));
             assert_eq!(scan[1], (b"wal_002".to_vec(), b"payload2".to_vec()));
         }
 
         {
-            let backend = RocksDbBackend::open(dir.path()).unwrap();
+            let backend = RocksDbBackend::open(dir.path())?;
             assert_eq!(
-                backend.get(cf, b"wal_001").unwrap(),
+                backend.get(cf, b"wal_001")?,
                 Some(b"payload1".to_vec())
             );
         }
+        Ok(())
     }
 
     #[test]
-    fn test_rocksdb_edge_cases() {
-        let dir = tempdir().unwrap();
-        let mut backend = RocksDbBackend::open(dir.path()).unwrap();
-        let cf = ColumnFamily::Checkpoints;
+    fn test_rocksdb_edge_cases() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let mut backend = RocksDbBackend::open(dir.path())?;
+        let cf = ColumnFamily::ResolutionLedger;
 
         assert!(backend.apply_transaction(&[]).is_ok());
-        assert_eq!(backend.get(cf, b"non_existent").unwrap(), None);
-        assert!(backend.prefix_scan(cf, b"non_existent").unwrap().is_empty());
+        assert_eq!(backend.get(cf, b"non_existent")?, None);
+        assert!(backend.prefix_scan(cf, b"non_existent")?.is_empty());
+        Ok(())
     }
 }

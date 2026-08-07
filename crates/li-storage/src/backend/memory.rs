@@ -1,7 +1,6 @@
-//! In-memory BTreeMap implementation of KvBackend for no-std targets.
+//! In-memory `BTreeMap` implementation of `KvBackend` for deterministic tests.
 
-use alloc::collections::BTreeMap;
-use alloc::vec::Vec;
+use std::collections::BTreeMap;
 
 use crate::errors::StorageError;
 use crate::keys::ColumnFamily;
@@ -78,20 +77,19 @@ impl KvBackend for MemoryKvBackend {
 
 #[cfg(test)]
 mod tests {
-    use alloc::vec;
 
     use super::*;
     use crate::keys::ColumnFamily;
     use crate::traits::{KvBackend, KvOp};
 
     #[test]
-    fn test_memory_put_get_delete() {
+    fn test_memory_put_get_delete() -> Result<(), StorageError> {
         let mut backend = MemoryKvBackend::new();
-        let cf = ColumnFamily::Ontology;
+        let cf = ColumnFamily::ResolutionLedger;
         let key = b"key1".to_vec();
         let value = b"value1".to_vec();
 
-        assert_eq!(backend.get(cf, &key).unwrap(), None);
+        assert_eq!(backend.get(cf, &key)?, None);
 
         let batch = vec![KvOp::Put {
             cf,
@@ -100,7 +98,7 @@ mod tests {
         }];
         assert!(backend.apply_transaction(&batch).is_ok());
 
-        assert_eq!(backend.get(cf, &key).unwrap(), Some(value));
+        assert_eq!(backend.get(cf, &key)?, Some(value));
 
         let del_batch = vec![KvOp::Delete {
             cf,
@@ -108,13 +106,14 @@ mod tests {
         }];
         assert!(backend.apply_transaction(&del_batch).is_ok());
 
-        assert_eq!(backend.get(cf, &key).unwrap(), None);
+        assert_eq!(backend.get(cf, &key)?, None);
+        Ok(())
     }
 
     #[test]
-    fn test_memory_prefix_scan() {
+    fn test_memory_prefix_scan() -> Result<(), StorageError> {
         let mut backend = MemoryKvBackend::new();
-        let cf = ColumnFamily::Observations;
+        let cf = ColumnFamily::ResolutionLedger;
 
         let batch = vec![
             KvOp::Put {
@@ -133,24 +132,25 @@ mod tests {
                 value: b"v3".to_vec(),
             },
         ];
-        backend.apply_transaction(&batch).unwrap();
+        backend.apply_transaction(&batch)?;
 
-        let results = backend.prefix_scan(cf, b"pref_").unwrap();
+        let results = backend.prefix_scan(cf, b"pref_")?;
         assert_eq!(results.len(), 2);
         assert_eq!(results[0], (b"pref_1".to_vec(), b"v1".to_vec()));
         assert_eq!(results[1], (b"pref_2".to_vec(), b"v2".to_vec()));
 
-        let empty_prefix = backend.prefix_scan(cf, b"").unwrap();
+        let empty_prefix = backend.prefix_scan(cf, b"")?;
         assert_eq!(empty_prefix.len(), 3);
 
-        let missing_prefix = backend.prefix_scan(cf, b"nomatch").unwrap();
+        let missing_prefix = backend.prefix_scan(cf, b"nomatch")?;
         assert!(missing_prefix.is_empty());
+        Ok(())
     }
 
     #[test]
-    fn test_memory_edge_cases() {
+    fn test_memory_edge_cases() -> Result<(), StorageError> {
         let mut backend = MemoryKvBackend::new();
-        let cf = ColumnFamily::States;
+        let cf = ColumnFamily::ResolutionLedger;
 
         assert!(backend.apply_transaction(&[]).is_ok());
 
@@ -160,7 +160,8 @@ mod tests {
         }];
         assert!(backend.apply_transaction(&del_nonexistent).is_ok());
 
-        assert_eq!(backend.get(cf, b"absent").unwrap(), None);
-        assert!(backend.prefix_scan(cf, b"absent").unwrap().is_empty());
+        assert_eq!(backend.get(cf, b"absent")?, None);
+        assert!(backend.prefix_scan(cf, b"absent")?.is_empty());
+        Ok(())
     }
 }
